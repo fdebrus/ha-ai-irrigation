@@ -76,9 +76,15 @@ def _wire(hass: HomeAssistant) -> list[tuple[str, str]]:
 
 
 def _make(
-    hass: HomeAssistant, zones: dict[str, ZoneState], hub: HubState | None = None
+    hass: HomeAssistant,
+    zones: dict[str, ZoneState],
+    hub: HubState | None = None,
+    *,
+    pump_sensor_id: str | None = None,
 ) -> IrrigationScheduler:
-    sched = IrrigationScheduler(hass, hub or HubState(), zones, None)
+    sched = IrrigationScheduler(
+        hass, hub or HubState(), zones, None, pump_sensor_id=pump_sensor_id
+    )
     drivers = {}
     for zid, zone in zones.items():
         if zone.spec.driver is DriverType.BUTTON:
@@ -310,4 +316,89 @@ async def test_tick_skips_for_rain(hass: HomeAssistant, freezer) -> None:
     await _fire_tick(hass)
     assert not zones["z1"].is_running
     assert zones["z1"].last_skipped_reason == "rain_expected"
+    await sched.async_shutdown()
+
+
+# --- pump watchdog (item 5) ------------------------------------------------
+async def test_no_flow_flags_a_dry_pump_past_the_grace_window(
+    hass: HomeAssistant, freezer
+) -> None:
+    """A zone open past the grace window with the pump off flags no-flow."""
+    freezer.move_to("2026-07-27 06:00:00+00:00")
+    zones = {"z1": _valve_zone("z1")}
+    _wire(hass)
+    hass.states.async_set("valve.z1", "closed")
+    hass.states.async_set("binary_sensor.pump", "off")
+    sched = _make(hass, zones, pump_sensor_id="binary_sensor.pump")
+    await sched.async_start()
+
+    await sched.async_start_zone("z1")
+    assert zones["z1"].is_running
+    assert not sched.no_flow  # just started, still inside the grace window
+
+    freezer.tick(timedelta(minutes=4))
+    await _fire_tick(hass)
+    assert sched.no_flow
+    await sched.async_shutdown()
+
+
+async def test_no_flow_clears_when_the_pump_reports_flow(
+    hass: HomeAssistant, freezer
+) -> None:
+    """The flag clears as soon as the pump sensor turns on."""
+    freezer.move_to("2026-07-27 06:00:00+00:00")
+    zones = {"z1": _valve_zone("z1")}
+    _wire(hass)
+    hass.states.async_set("valve.z1", "closed")
+    hass.states.async_set("binary_sensor.pump", "off")
+    sched = _make(hass, zones, pump_sensor_id="binary_sensor.pump")
+    await sched.async_start()
+    await sched.async_start_zone("z1")
+
+    freezer.tick(timedelta(minutes=4))
+    await _fire_tick(hass)
+    assert sched.no_flow
+
+    hass.states.async_set("binary_sensor.pump", "on")
+    freezer.tick(timedelta(minutes=1))
+    await _fire_tick(hass)
+    assert not sched.no_flow
+    await sched.async_shutdown()
+
+
+async def test_no_flow_clears_when_the_zone_stops(
+    hass: HomeAssistant, freezer
+) -> None:
+    """Stopping the last running zone clears the flag immediately."""
+    freezer.move_to("2026-07-27 06:00:00+00:00")
+    zones = {"z1": _valve_zone("z1")}
+    _wire(hass)
+    hass.states.async_set("valve.z1", "closed")
+    hass.states.async_set("binary_sensor.pump", "off")
+    sched = _make(hass, zones, pump_sensor_id="binary_sensor.pump")
+    await sched.async_start()
+    await sched.async_start_zone("z1")
+    freezer.tick(timedelta(minutes=4))
+    await _fire_tick(hass)
+    assert sched.no_flow
+
+    await sched.async_stop_zone("z1")
+    assert not sched.no_flow
+    await sched.async_shutdown()
+
+
+async def test_no_flow_inert_without_a_pump_sensor(
+    hass: HomeAssistant, freezer
+) -> None:
+    """With no pump sensor configured the watchdog never fires."""
+    freezer.move_to("2026-07-27 06:00:00+00:00")
+    zones = {"z1": _valve_zone("z1")}
+    _wire(hass)
+    hass.states.async_set("valve.z1", "closed")
+    sched = _make(hass, zones)  # no pump_sensor_id
+    await sched.async_start()
+    await sched.async_start_zone("z1")
+    freezer.tick(timedelta(minutes=10))
+    await _fire_tick(hass)
+    assert not sched.no_flow
     await sched.async_shutdown()

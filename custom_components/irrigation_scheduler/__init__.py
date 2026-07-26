@@ -34,6 +34,7 @@ from .const import (
     CONF_OUTLET_GAP,
     CONF_OUTLETS,
     CONF_PLAN_AT,
+    CONF_PUMP_SENSOR,
     CONF_SEASONAL,
     CONF_SETTLE_MINUTES,
     CONF_START_BUTTON,
@@ -165,8 +166,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
     if weather_entity:
         coordinator = RainCoordinator(hass, weather_entity)
 
+    pump_sensor: str | None = entry.data.get(CONF_PUMP_SENSOR)
     scheduler = IrrigationScheduler(
-        hass, hub, zones, coordinator, weather_entity_id=weather_entity
+        hass,
+        hub,
+        zones,
+        coordinator,
+        weather_entity_id=weather_entity,
+        pump_sensor_id=pump_sensor,
     )
     drivers = {
         zone_id: _build_driver(

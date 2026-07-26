@@ -13,8 +13,9 @@ import logging
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from homeassistant.const import STATE_CLOSED, STATE_OFF
+from homeassistant.const import STATE_CLOSED, STATE_OFF, STATE_ON
 from homeassistant.core import callback
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import (
     async_track_point_in_utc_time,
@@ -25,6 +26,8 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    DOMAIN,
+    NO_FLOW_GRACE_MINUTES,
     SIGNAL_ZONE_UPDATED,
     SOURCE_ADOPTED,
     SOURCE_MANUAL,
@@ -63,12 +66,14 @@ _CLOSED_STATES: frozenset[str] = frozenset({STATE_OFF, STATE_CLOSED})
 _RAINING_STATES: frozenset[str] = frozenset({"rainy", "pouring"})
 # Seconds to keep ignoring our own valve command echoing back as a state event.
 _SELF_DRIVEN_TTL = 5
+# Repair issue id for the pump running dry under an open zone.
+_NO_FLOW_ISSUE = "pump_no_flow"
 
 
 class IrrigationScheduler:
     """Owns the minute tick, the run/stop path, the Store and adoption."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the scheduler collects the hub's collaborators
         self,
         hass: HomeAssistant,
         hub: HubState,
@@ -76,6 +81,7 @@ class IrrigationScheduler:
         coordinator: RainCoordinator | None,
         *,
         weather_entity_id: str | None = None,
+        pump_sensor_id: str | None = None,
     ) -> None:
         """Initialise; drivers are attached with :meth:`set_drivers`."""
         self.hass = hass
@@ -83,6 +89,7 @@ class IrrigationScheduler:
         self.zones = zones
         self.coordinator = coordinator
         self._weather_entity_id = weather_entity_id
+        self._pump_sensor_id = pump_sensor_id
         self.drivers: dict[str, Driver] = {}
         self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._unsub_tick: CALLBACK_TYPE | None = None
@@ -90,7 +97,7 @@ class IrrigationScheduler:
         self._unsub_stop: dict[str, CALLBACK_TYPE] = {}
         self._self_driven: set[str] = set()
         self._self_driven_timers: dict[str, TimerHandle | None] = {}
-        # Set by the pump watchdog (Phase 7); read by the no-flow binary sensor.
+        # Set by the pump watchdog; read by the no-flow binary sensor.
         self.no_flow = False
 
     def set_drivers(self, drivers: dict[str, Driver]) -> None:
@@ -195,6 +202,7 @@ class IrrigationScheduler:
         local_now = dt_util.as_local(now)
         rain = self.coordinator.data if self.coordinator else None
         raining = self._raining_now()
+        self._evaluate_no_flow()
         for zone_id, zone in self.zones.items():
             if not self.hub.master_enabled:
                 zone.last_skipped_reason = "master_off"
@@ -220,6 +228,60 @@ class IrrigationScheduler:
             return False
         state = self.hass.states.get(self._weather_entity_id)
         return state is not None and state.state in _RAINING_STATES
+
+    # ------------------------------------------------------------------
+    # Pump watchdog
+    # ------------------------------------------------------------------
+    @callback
+    def _evaluate_no_flow(self) -> None:
+        """
+        Flag a dry pump: a zone open past the grace window with the pump off.
+
+        Membership is by the tracked run, so a button zone (Gazon), which has no
+        valve to watch, still counts as "running" while its timer is live. With
+        no pump sensor configured the watchdog is inert.
+        """
+        if not self._pump_sensor_id:
+            return
+        running = [zone for zone in self.zones.values() if zone.is_running]
+        if not running:
+            self._set_no_flow(state=False)
+            return
+        pump = self.hass.states.get(self._pump_sensor_id)
+        if pump is not None and pump.state == STATE_ON:
+            self._set_no_flow(state=False)
+            return
+        now = dt_util.utcnow()
+        grace = timedelta(minutes=NO_FLOW_GRACE_MINUTES)
+        stalled = any(
+            zone.last_run is not None and now - zone.last_run >= grace
+            for zone in running
+        )
+        self._set_no_flow(state=stalled)
+
+    @callback
+    def _set_no_flow(self, *, state: bool) -> None:
+        """Latch the no-flow flag and raise/clear the matching repair issue."""
+        if state == self.no_flow:
+            return
+        self.no_flow = state
+        if state:
+            _LOGGER.warning(
+                "Pump reports no flow while a zone is running (sensor %s)",
+                self._pump_sensor_id,
+            )
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                _NO_FLOW_ISSUE,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=_NO_FLOW_ISSUE,
+                translation_placeholders={"sensor": self._pump_sensor_id or ""},
+            )
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, _NO_FLOW_ISSUE)
+        self._notify()
 
     # ------------------------------------------------------------------
     # Run control -- one pump, one zone at a time (invariant 2)
@@ -269,6 +331,7 @@ class IrrigationScheduler:
         zone.running_until = None
         zone.running_source = None
         await self._async_save()
+        self._evaluate_no_flow()
         self._notify()
         _LOGGER.debug("Zone %s stopped", zone.spec.name)
 

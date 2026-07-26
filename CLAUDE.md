@@ -172,9 +172,13 @@ types, sequencing, overlap detection, AI clamping).
 
 To build, in order:
 
-5. **Pump watchdog.** Port the no-flow warning: zone running 3 minutes with
-   `binary_sensor.pump_running` off → repair issue. For Gazon, "running" means
-   the timer is active, since there is no valve to watch.
+5. ~~**Pump watchdog.**~~ **Done.** The scheduler evaluates flow on every tick
+   (and on stop): a zone open past `NO_FLOW_GRACE_MINUTES` with the configured
+   pump sensor still off sets `scheduler.no_flow` and raises the `pump_no_flow`
+   repair issue; it clears when the pump reports flow or the zone stops.
+   Membership is by the tracked run, so Gazon (a button zone with no valve to
+   watch) still counts as running. Inert when no pump sensor is configured.
+   Covered in `tests/test_scheduler.py`.
 6. **Repair issues** when a zone's configured entity disappears.
 7. **Quality scale.** Add `"quality_scale": "silver"` to `manifest.json` and
    fix what hassfest then demands.

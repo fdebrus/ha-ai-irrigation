@@ -239,6 +239,10 @@
     "ai_plan_overlap": {
       "title": "AI plan created an overlap",
       "description": "The AI plan would have run two zones on the shared pump at once ({conflicts}). It was rolled back to the previous plan. This is a bug — please report it."
+    },
+    "pump_no_flow": {
+      "title": "Pump reports no flow",
+      "description": "A zone has been running for several minutes but the pump sensor ({sensor}) still reads off. Check the pump, its power and the sensor — the zone may not be getting any water."
     }
   }
 }
