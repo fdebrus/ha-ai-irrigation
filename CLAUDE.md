@@ -134,9 +134,11 @@ Known gaps — pick these up in roughly this order:
    `weekdays` list and restore it across restarts; the subentry still seeds the
    initial values. Same source-of-truth model as `duration`/`start_time`
    (invariant 5): the subentry selector remains as an initial default only.
-4. **Valve unavailability.** If the valve entity is `unavailable` at start time
-   the service call silently does nothing. Detect it, log a warning, and set the
-   status sensor to `valve_unavailable`.
+4. ~~**Valve unavailability.**~~ **Done.** `async_start_zone` checks the valve
+   state before opening (non-adopted starts only); if it is missing or
+   `unavailable` it logs a warning, sets `last_skipped_reason` /status to
+   `valve_unavailable`, does not start a phantom run, and releases the next
+   queued zone.
 5. **Precipitation in mm.** `RainCoordinator` only reads
    `precipitation_probability`. Some providers only give `precipitation`; add a
    fallback threshold in mm.

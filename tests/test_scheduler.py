@@ -332,3 +332,50 @@ async def test_adopted_run_bypasses_the_sequential_queue(
     assert not zones["zone2"].queued
 
     await scheduler.async_shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Valve unavailability -- gap 4
+# ---------------------------------------------------------------------------
+async def test_start_is_skipped_when_the_valve_is_unavailable(
+    hass: HomeAssistant, freezer
+) -> None:
+    """An unavailable valve skips the run and reports valve_unavailable."""
+    freezer.move_to("2026-07-27 06:00:00+00:00")
+    zone = _zone()
+    calls = _wire_valve(hass)
+    hass.states.async_set(VALVE, "unavailable")
+
+    scheduler = IrrigationScheduler(hass, HubRuntime(), {"zone1": zone}, None)
+    await scheduler.async_start()
+
+    await scheduler.async_start_zone("zone1", source=SOURCE_MANUAL)
+    await hass.async_block_till_done()
+
+    assert not zone.is_running
+    assert zone.last_skipped_reason == "valve_unavailable"
+    assert ("open", VALVE) not in calls
+
+    await scheduler.async_shutdown()
+
+
+async def test_start_is_skipped_when_the_valve_entity_is_missing(
+    hass: HomeAssistant, freezer
+) -> None:
+    """A valve entity that no longer exists skips the run, not opens nothing."""
+    freezer.move_to("2026-07-27 06:00:00+00:00")
+    zone = _zone()
+    calls = _wire_valve(hass)
+    # No state is set for VALVE: the entity does not exist.
+
+    scheduler = IrrigationScheduler(hass, HubRuntime(), {"zone1": zone}, None)
+    await scheduler.async_start()
+
+    await scheduler.async_start_zone("zone1", source=SOURCE_MANUAL)
+    await hass.async_block_till_done()
+
+    assert not zone.is_running
+    assert zone.last_skipped_reason == "valve_unavailable"
+    assert calls == []
+
+    await scheduler.async_shutdown()

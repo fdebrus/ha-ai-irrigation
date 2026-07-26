@@ -14,6 +14,7 @@ from homeassistant.const import (
     STATE_ON,
     STATE_OPEN,
     STATE_OPENING,
+    STATE_UNAVAILABLE,
 )
 from homeassistant.core import (
     CALLBACK_TYPE,
@@ -191,6 +192,21 @@ class IrrigationScheduler:
             self._enqueue(zone_id, duration_minutes, source)
             return
 
+        # A valve that is unavailable (or gone) swallows the service call
+        # silently, which would leave us tracking a run that never opened. Skip
+        # the run instead, and let the next queued zone try.
+        if source != SOURCE_ADOPTED and not self._valve_available(zone):
+            _LOGGER.warning(
+                "Zone %s valve %s is unavailable; skipping run",
+                zone.name,
+                zone.valve_entity_id,
+            )
+            zone.last_skipped_reason = "valve_unavailable"
+            zone.queued = False
+            self._notify()
+            self._maybe_start_next()
+            return
+
         minutes = duration_minutes or zone.duration_minutes
         ends_at = dt_util.utcnow() + timedelta(minutes=minutes)
 
@@ -282,6 +298,13 @@ class IrrigationScheduler:
     # ------------------------------------------------------------------
     # Valve I/O
     # ------------------------------------------------------------------
+    def _valve_available(self, zone: ZoneRuntime) -> bool:
+        """Return True if the zone's valve exists and is not unavailable."""
+        if not zone.valve_entity_id:
+            return False
+        state = self.hass.states.get(zone.valve_entity_id)
+        return state is not None and state.state != STATE_UNAVAILABLE
+
     async def _async_set_valve(self, zone: ZoneRuntime, *, open_valve: bool) -> None:
         """Open or close the zone's valve, whatever domain it lives in."""
         entity_id = zone.valve_entity_id
