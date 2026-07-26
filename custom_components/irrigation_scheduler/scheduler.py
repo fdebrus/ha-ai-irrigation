@@ -13,7 +13,13 @@ import logging
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from homeassistant.const import STATE_CLOSED, STATE_OFF, STATE_ON
+from homeassistant.const import (
+    STATE_CLOSED,
+    STATE_OFF,
+    STATE_ON,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
+)
 from homeassistant.core import callback
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.dispatcher import async_dispatcher_send
@@ -244,7 +250,10 @@ class IrrigationScheduler:
 
         Membership is by the tracked run, so a button zone (Gazon), which has no
         valve to watch, still counts as "running" while its timer is live. With
-        no pump sensor configured the watchdog is inert.
+        no pump sensor configured the watchdog is inert. A pump sensor that is
+        missing, unavailable or unknown is treated as NO SIGNAL, not as "off" --
+        a deleted template sensor or an offline smart plug must not fake a dry
+        pump.
         """
         if not self._pump_sensor_id:
             return
@@ -253,7 +262,14 @@ class IrrigationScheduler:
             self._set_no_flow(state=False)
             return
         pump = self.hass.states.get(self._pump_sensor_id)
-        if pump is not None and pump.state == STATE_ON:
+        if pump is None or pump.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            _LOGGER.debug(
+                "Pump sensor %s has no usable state; skipping the no-flow check",
+                self._pump_sensor_id,
+            )
+            self._set_no_flow(state=False)
+            return
+        if pump.state == STATE_ON:
             self._set_no_flow(state=False)
             return
         now = dt_util.utcnow()
