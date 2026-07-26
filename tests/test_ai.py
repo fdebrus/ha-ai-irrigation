@@ -73,8 +73,14 @@ def test_build_structure_offers_enabled_only_for_seasonal_zones():
     assert "jardin_duration" in fields
     assert "jardin_enabled" not in fields  # not seasonal
     assert "gazon_enabled" in fields  # seasonal
-    assert fields["jardin_duration"]["selector"]["number"]["min"] == 5
-    assert fields["jardin_duration"]["selector"]["number"]["max"] == 30
+    # The Anthropic structured-output schema rejects minimum/maximum on numbers,
+    # so the selector carries no min/max and the bounds live in the description.
+    number = fields["jardin_duration"]["selector"]["number"]
+    assert "min" not in number
+    assert "max" not in number
+    assert number["mode"] == "box"
+    assert "5" in fields["jardin_duration"]["description"]
+    assert "30" in fields["jardin_duration"]["description"]
     assert "rain_threshold" in fields
     assert "narrative" in fields
 

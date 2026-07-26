@@ -1,0 +1,584 @@
+# ============================================================
+#  Irrigation dashboard — mapped to the Irrigation Scheduler
+#  integration (was the input_* / timer.* / script.* package).
+#
+#  Entity mapping applied throughout:
+#    input_boolean.irrigation_master        -> switch.irrigation_master
+#    input_boolean.irrigation_rain_skip     -> switch.irrigation_rain_skip
+#    input_boolean.irrigation_ai_enabled    -> switch.irrigation_ai
+#    input_number.irrigation_rain_threshold -> number.irrigation_rain_threshold
+#    binary_sensor.irrigation_schedule_overlap -> binary_sensor.irrigation_overlap
+#    input_text.irrigation_ai_last_summary  -> state_attr('sensor.irrigation_daily_plan','narrative')
+#    automation.irrigation_ai_daily_check   -> button.irrigation_plan_now
+#
+#    per zone <z> in {jardin, gazon, parking, entree, framboisier}:
+#      input_boolean.irrigation_zoneN_enabled       -> switch.<z>_enabled
+#      input_boolean.irrigation_zoneN_start2_enabled-> switch.<z>_second_run
+#      input_number.irrigation_zoneN_duration       -> number.<z>_duration
+#      input_select.irrigation_zoneN_schedule       -> select.<z>_schedule
+#      input_datetime.irrigation_zoneN_start        -> sensor.<z>_morning_start  (READ-ONLY)
+#      input_datetime.irrigation_zoneN_start2       -> sensor.<z>_evening_start  (READ-ONLY)
+#      timer.irrigation_zoneN / jardin_running      -> sensor.<z>_status ("running (...)"/"idle"/skip)
+#      state_attr(timer,'finishes_at')              -> sensor.<z>_finishes_at
+#      script.irrigation_run_zone {zone:N}          -> button.<z>_run_now
+#      script.irrigation_stop_zone {zone:N}         -> button.<z>_stop
+#
+#  Dropped (no longer exist — the integration owns this now):
+#    - Start-time pickers: start times are derived and read-only.
+#    - Jardin outlet management (jardin_outN_enabled, jardin_gap,
+#      jardin_advance_pulse, jardin_current_outlet): outlets and gap
+#      are set in the integration's zone options; the distributor
+#      runs the sequence itself.
+#    - AI "analyse en cours" progress: use the plan sensor + Plan now.
+# ============================================================
+views:
+  - type: sections
+    title: Irrigation
+    path: irrigation
+    icon: mdi:sprinkler-variant
+    layout:
+      width: 320
+    cards: []
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: 💧 Irrigation
+            heading_style: title
+          - type: custom:mushroom-template-card
+            primary: >-
+              {% set ns = namespace(n=0) %} {% for z in ['jardin', 'gazon',
+              'parking', 'entree', 'framboisier'] %}
+                {% if states('sensor.' ~ z ~ '_status').startswith('running') %}{% set ns.n = ns.n + 1 %}{% endif %}
+              {% endfor %} {% if ns.n > 0 %}{{ ns.n }} zone{{ 's' if ns.n > 1 }}
+              running now {% elif is_state('switch.irrigation_master', 'off')
+              %}System off {% else %}Idle — waiting for next schedule{% endif %}
+            secondary: ""
+            icon: mdi:information-outline
+            icon_color: >-
+              {% if is_state('switch.irrigation_master', 'off') %}red{% else
+              %}blue{% endif %}
+            tap_action:
+              action: none
+            grid_options:
+              columns: 12
+              rows: 1
+          - type: conditional
+            conditions:
+              - entity: binary_sensor.irrigation_overlap
+                state: "on"
+            card:
+              type: custom:mushroom-template-card
+              primary: ⚠️ Schedule overlap
+              secondary: >-
+                {{ state_attr('binary_sensor.irrigation_overlap', 'conflicts') }}
+                — zones share one pump, the derived start times collided (a bug —
+                please report it).
+              icon: mdi:alert
+              icon_color: amber
+              multiline_secondary: true
+              tap_action:
+                action: none
+          - type: conditional
+            conditions:
+              - entity: binary_sensor.irrigation_no_flow
+                state: "on"
+            card:
+              type: custom:mushroom-template-card
+              primary: 🚱 No flow
+              secondary: >-
+                A zone is running but the pump reports no flow — check the pump,
+                its power and the pump sensor.
+              icon: mdi:water-pump-off
+              icon_color: red
+              multiline_secondary: true
+              tap_action:
+                action: none
+          - type: horizontal-stack
+            cards:
+              - type: custom:mushroom-entity-card
+                entity: switch.irrigation_master
+                name: Master
+                icon: mdi:sprinkler-fire
+                icon_color: >-
+                  {{ 'green' if is_state('switch.irrigation_master', 'on') else
+                  'red' }}
+                tap_action:
+                  action: toggle
+              - type: custom:mushroom-entity-card
+                entity: switch.irrigation_rain_skip
+                name: Rain skip
+                icon: mdi:weather-rainy
+                icon_color: >-
+                  {{ 'blue' if is_state('switch.irrigation_rain_skip', 'on') else
+                  'disabled' }}
+                tap_action:
+                  action: toggle
+          - type: horizontal-stack
+            cards:
+              - type: custom:mushroom-entity-card
+                entity: switch.irrigation_ai
+                name: AI plan
+                icon: mdi:robot
+                icon_color: >-
+                  {{ 'purple' if is_state('switch.irrigation_ai', 'on') else
+                  'disabled' }}
+                tap_action:
+                  action: toggle
+              - type: custom:mushroom-template-card
+                primary: Stop all
+                icon: mdi:stop-circle
+                icon_color: red
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.irrigation_stop_all
+          - type: entities
+            entities:
+              - entity: number.irrigation_rain_threshold
+                name: Skip if rain chance above
+              - entity: sensor.irrigation_rain_probability
+                name: Rain probability
+              - entity: weather.forecast_home
+                name: Weather
+              - entity: binary_sensor.pump_running
+                name: Pompe RMQ
+          - type: conditional
+            conditions:
+              - entity: switch.irrigation_ai
+                state: "on"
+            card:
+              type: custom:mushroom-template-card
+              primary: >-
+                {% if state_attr('sensor.irrigation_daily_plan', 'stale')
+                %}Dernier plan AI (échec — plan de la veille){% else %}Dernier
+                plan AI{% endif %}
+              secondary: >-
+                {% set n = state_attr('sensor.irrigation_daily_plan',
+                'narrative') %} {% if n %}{{ n }}{% else %}Aucune analyse encore —
+                lance un plan{% endif %}
+              icon: >-
+                {{ 'mdi:robot-dead-outline' if
+                state_attr('sensor.irrigation_daily_plan', 'stale') else
+                'mdi:robot-outline' }}
+              icon_color: >-
+                {{ 'red' if state_attr('sensor.irrigation_daily_plan', 'stale')
+                else 'purple' }}
+              multiline_secondary: true
+              tap_action:
+                action: more-info
+                entity: sensor.irrigation_daily_plan
+            grid_options:
+              rows: auto
+              columns: full
+          - type: conditional
+            conditions:
+              - entity: switch.irrigation_ai
+                state: "on"
+            card:
+              type: custom:mushroom-template-card
+              primary: Run AI plan now
+              icon: mdi:play-circle
+              icon_color: purple
+              tap_action:
+                action: perform-action
+                perform_action: button.press
+                target:
+                  entity_id: button.irrigation_plan_now
+      - type: grid
+        cards:
+          - type: heading
+            heading: Entrée
+            icon: mdi:door
+          - type: picture-glance
+            title: Entrée
+            image: /local/irrigation/entree.jpg?v=1
+            entities:
+              - entity: valve.garden_entry
+            tap_action:
+              action: none
+            hold_action:
+              action: none
+            grid_options:
+              columns: full
+              rows: auto
+          - type: custom:mushroom-template-card
+            entity: sensor.entree_status
+            primary: Entrée
+            secondary: >-
+              {% if states('sensor.entree_status').startswith('running') %}
+                Running — finishes {{ as_timestamp(states('sensor.entree_finishes_at')) | timestamp_custom('%H:%M') }}
+              {% elif is_state('switch.entree_enabled', 'on') %}
+                Next: {{ states('sensor.entree_morning_start') }}
+                {%- if is_state('switch.entree_second_run', 'on') %} + {{ states('sensor.entree_evening_start') }}{% endif %}
+                · {{ states('number.entree_duration') | int }} min
+                · {{ states('select.entree_schedule') }}
+              {% else %}Disabled{% endif %}
+            icon: mdi:sprinkler-variant
+            icon_color: >-
+              {% if states('sensor.entree_status').startswith('running') %}green
+              {% elif is_state('switch.entree_enabled', 'on') %}blue {% else
+              %}disabled{% endif %}
+            badge_icon: >-
+              {{ 'mdi:play' if
+              states('sensor.entree_status').startswith('running') }}
+            badge_color: green
+            tap_action:
+              action: none
+            grid_options:
+              columns: 12
+              rows: 1
+          - type: entities
+            show_header_toggle: false
+            entities:
+              - entity: switch.entree_enabled
+                name: Enabled
+              - entity: sensor.entree_morning_start
+                name: Morning start (auto)
+              - entity: number.entree_duration
+                name: Duration
+              - entity: select.entree_schedule
+                name: Days
+              - entity: switch.entree_second_run
+                name: 2nd run
+              - entity: sensor.entree_evening_start
+                name: Evening start (auto)
+          - type: horizontal-stack
+            cards:
+              - type: custom:mushroom-template-card
+                primary: Run now
+                icon: mdi:play
+                icon_color: green
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.entree_run_now
+              - type: custom:mushroom-template-card
+                primary: Stop
+                icon: mdi:stop
+                icon_color: red
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.entree_stop
+      - type: grid
+        cards:
+          - type: heading
+            heading: Framboisier
+            icon: mdi:fruit-grapes
+          - type: picture-glance
+            title: Framboisier
+            image: /local/irrigation/framboisier.jpg?v=1
+            entities:
+              - entity: valve.garden_framboisier
+            tap_action:
+              action: none
+            hold_action:
+              action: none
+            grid_options:
+              columns: full
+              rows: auto
+          - type: custom:mushroom-template-card
+            entity: sensor.framboisier_status
+            primary: Framboisier
+            secondary: >-
+              {% if states('sensor.framboisier_status').startswith('running') %}
+                Running — finishes {{ as_timestamp(states('sensor.framboisier_finishes_at')) | timestamp_custom('%H:%M') }}
+              {% elif is_state('switch.framboisier_enabled', 'on') %}
+                Next: {{ states('sensor.framboisier_morning_start') }}
+                {%- if is_state('switch.framboisier_second_run', 'on') %} + {{ states('sensor.framboisier_evening_start') }}{% endif %}
+                · {{ states('number.framboisier_duration') | int }} min
+                · {{ states('select.framboisier_schedule') }}
+              {% else %}Disabled{% endif %}
+            icon: mdi:sprinkler-variant
+            icon_color: >-
+              {% if states('sensor.framboisier_status').startswith('running')
+              %}green {% elif is_state('switch.framboisier_enabled', 'on') %}blue
+              {% else %}disabled{% endif %}
+            badge_icon: >-
+              {{ 'mdi:play' if
+              states('sensor.framboisier_status').startswith('running') }}
+            badge_color: green
+            tap_action:
+              action: none
+            grid_options:
+              columns: 12
+              rows: 1
+          - type: entities
+            show_header_toggle: false
+            entities:
+              - entity: switch.framboisier_enabled
+                name: Enabled
+              - entity: sensor.framboisier_morning_start
+                name: Morning start (auto)
+              - entity: number.framboisier_duration
+                name: Duration
+              - entity: select.framboisier_schedule
+                name: Days
+              - entity: switch.framboisier_second_run
+                name: 2nd run
+              - entity: sensor.framboisier_evening_start
+                name: Evening start (auto)
+          - type: horizontal-stack
+            cards:
+              - type: custom:mushroom-template-card
+                primary: Run now
+                icon: mdi:play
+                icon_color: green
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.framboisier_run_now
+              - type: custom:mushroom-template-card
+                primary: Stop
+                icon: mdi:stop
+                icon_color: red
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.framboisier_stop
+      - type: grid
+        cards:
+          - type: heading
+            heading: Parking
+            icon: mdi:car
+          - type: picture-glance
+            title: Parking
+            image: /local/irrigation/parking.jpg?v=1
+            entities:
+              - entity: valve.garden_parking
+            tap_action:
+              action: none
+            hold_action:
+              action: none
+            grid_options:
+              columns: full
+              rows: auto
+          - type: custom:mushroom-template-card
+            entity: sensor.parking_status
+            primary: Parking
+            secondary: >-
+              {% if states('sensor.parking_status').startswith('running') %}
+                Running — finishes {{ as_timestamp(states('sensor.parking_finishes_at')) | timestamp_custom('%H:%M') }}
+              {% elif is_state('switch.parking_enabled', 'on') %}
+                Next: {{ states('sensor.parking_morning_start') }}
+                {%- if is_state('switch.parking_second_run', 'on') %} + {{ states('sensor.parking_evening_start') }}{% endif %}
+                · {{ states('number.parking_duration') | int }} min
+                · {{ states('select.parking_schedule') }}
+              {% else %}Disabled{% endif %}
+            icon: mdi:sprinkler-variant
+            icon_color: >-
+              {% if states('sensor.parking_status').startswith('running')
+              %}green {% elif is_state('switch.parking_enabled', 'on') %}blue {%
+              else %}disabled{% endif %}
+            badge_icon: >-
+              {{ 'mdi:play' if
+              states('sensor.parking_status').startswith('running') }}
+            badge_color: green
+            tap_action:
+              action: none
+            grid_options:
+              columns: 12
+              rows: 1
+          - type: entities
+            show_header_toggle: false
+            entities:
+              - entity: switch.parking_enabled
+                name: Enabled
+              - entity: sensor.parking_morning_start
+                name: Morning start (auto)
+              - entity: number.parking_duration
+                name: Duration
+              - entity: select.parking_schedule
+                name: Days
+              - entity: switch.parking_second_run
+                name: 2nd run
+              - entity: sensor.parking_evening_start
+                name: Evening start (auto)
+          - type: horizontal-stack
+            cards:
+              - type: custom:mushroom-template-card
+                primary: Run now
+                icon: mdi:play
+                icon_color: green
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.parking_run_now
+              - type: custom:mushroom-template-card
+                primary: Stop
+                icon: mdi:stop
+                icon_color: red
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.parking_stop
+      - type: grid
+        cards:
+          - type: heading
+            heading: Jardin — distributeur 3 sorties
+            icon: mdi:flower
+          - type: picture-glance
+            title: Jardin
+            image: /local/irrigation/jardin.jpg?v=1
+            entities:
+              - entity: valve.garden_jardin
+            tap_action:
+              action: none
+            hold_action:
+              action: none
+            grid_options:
+              columns: full
+              rows: auto
+          - type: custom:mushroom-template-card
+            entity: sensor.jardin_status
+            primary: Jardin
+            secondary: >-
+              {% if states('sensor.jardin_status').startswith('running') %}
+                Running — finishes {{ as_timestamp(states('sensor.jardin_finishes_at')) | timestamp_custom('%H:%M') }}
+              {% elif is_state('switch.jardin_enabled', 'on') %}
+                Next: {{ states('sensor.jardin_morning_start') }}
+                {%- if is_state('switch.jardin_second_run', 'on') %} + {{ states('sensor.jardin_evening_start') }}{% endif %}
+                · {{ states('number.jardin_duration') | int }} min/outlet
+                · {{ states('select.jardin_schedule') }}
+              {% else %}Disabled{% endif %}
+            icon: mdi:sprinkler-variant
+            icon_color: >-
+              {% if states('sensor.jardin_status').startswith('running') %}green
+              {% elif is_state('switch.jardin_enabled', 'on') %}blue {% else
+              %}disabled{% endif %}
+            badge_icon: >-
+              {{ 'mdi:play' if
+              states('sensor.jardin_status').startswith('running') }}
+            badge_color: green
+            tap_action:
+              action: none
+            grid_options:
+              columns: 12
+              rows: 1
+          - type: entities
+            show_header_toggle: false
+            entities:
+              - entity: switch.jardin_enabled
+                name: Jardin enabled
+              - entity: sensor.jardin_morning_start
+                name: Morning start (auto)
+              - entity: number.jardin_duration
+                name: Duration (per outlet)
+              - entity: select.jardin_schedule
+                name: Days
+              - entity: switch.jardin_second_run
+                name: 2nd run
+              - entity: sensor.jardin_evening_start
+                name: Evening start (auto)
+          - type: markdown
+            content: >-
+              Outlet count and the gap between outlets are set in the
+              integration: **Settings → Devices & Services → Irrigation
+              Scheduler → Jardin → Configure**. The distributor advances the
+              outlets itself during a run.
+          - type: horizontal-stack
+            cards:
+              - type: custom:mushroom-template-card
+                primary: Run sequence
+                icon: mdi:play
+                icon_color: green
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.jardin_run_now
+              - type: custom:mushroom-template-card
+                primary: Stop
+                icon: mdi:stop
+                icon_color: red
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.jardin_stop
+      - type: grid
+        cards:
+          - type: heading
+            heading: Gazon — Aiper IrriSense (ligne dédiée)
+            icon: mdi:grass
+          - type: picture-glance
+            title: Gazon
+            image: /local/irrigation/gazon.jpg?v=3
+            entities:
+              - entity: sensor.gazon_status
+            tap_action:
+              action: none
+            hold_action:
+              action: none
+            grid_options:
+              columns: full
+              rows: auto
+          - type: custom:mushroom-template-card
+            entity: sensor.gazon_status
+            primary: Gazon
+            secondary: >-
+              {% if states('sensor.gazon_status').startswith('running') %}
+                Running — finishes {{ as_timestamp(states('sensor.gazon_finishes_at')) | timestamp_custom('%H:%M') }}
+              {% elif is_state('switch.gazon_enabled', 'on') %}
+                Next: {{ states('sensor.gazon_morning_start') }}
+                {%- if is_state('switch.gazon_second_run', 'on') %} + {{ states('sensor.gazon_evening_start') }}{% endif %}
+                · {{ states('number.gazon_duration') | int }} min
+                · {{ states('select.gazon_schedule') }}
+              {% else %}Disabled (dormant / off-season){% endif %}
+            icon: mdi:grass
+            icon_color: >-
+              {% if states('sensor.gazon_status').startswith('running') %}green
+              {% elif is_state('switch.gazon_enabled', 'on') %}blue {% else
+              %}disabled{% endif %}
+            badge_icon: >-
+              {{ 'mdi:play' if
+              states('sensor.gazon_status').startswith('running') }}
+            badge_color: green
+            tap_action:
+              action: none
+            grid_options:
+              columns: 12
+              rows: 1
+          - type: entities
+            show_header_toggle: false
+            entities:
+              - entity: switch.gazon_enabled
+                name: Enabled (AI, seasonal)
+              - entity: sensor.gazon_morning_start
+                name: Morning start (auto)
+              - entity: number.gazon_duration
+                name: Duration
+              - entity: select.gazon_schedule
+                name: Days
+              - entity: switch.gazon_second_run
+                name: 2nd run
+              - entity: sensor.gazon_evening_start
+                name: Evening start (auto)
+          - type: horizontal-stack
+            cards:
+              - type: custom:mushroom-template-card
+                primary: Run now
+                icon: mdi:play
+                icon_color: green
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.gazon_run_now
+              - type: custom:mushroom-template-card
+                primary: Stop
+                icon: mdi:stop
+                icon_color: red
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.gazon_stop
