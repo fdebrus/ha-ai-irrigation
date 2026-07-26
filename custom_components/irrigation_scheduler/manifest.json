@@ -1,13 +1,13 @@
 {
   "domain": "irrigation_scheduler",
   "name": "Irrigation Scheduler",
-  "codeowners": ["@YOUR_GITHUB_HANDLE"],
+  "after_dependencies": ["weather"],
+  "codeowners": ["@fdebrus"],
   "config_flow": true,
-  "dependencies": ["weather"],
-  "documentation": "https://github.com/YOUR_GITHUB_HANDLE/irrigation-scheduler",
+  "documentation": "https://github.com/fdebrus/ha-ai-irrigation",
   "integration_type": "hub",
   "iot_class": "calculated",
-  "issue_tracker": "https://github.com/YOUR_GITHUB_HANDLE/irrigation-scheduler/issues",
+  "issue_tracker": "https://github.com/fdebrus/ha-ai-irrigation/issues",
   "requirements": [],
   "version": "0.1.0"
 }
