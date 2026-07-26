@@ -95,8 +95,12 @@ The AI layer is entirely optional: turn off **AI plan** and the schedule is your
 
 With **Rain skip** on, a scheduled run is skipped when the forecast probability
 meets the **Rain threshold** (a percentage the AI may tune within a safe band).
-When no forecast is available the run is **not** skipped — a missing forecast is
-never treated as dry.
+The daily forecast is used first; if your provider publishes no probability
+there (Met.no's daily forecast, for one), the integration falls back to the
+hourly forecast and takes the maximum over the next 24 hours — the
+`Rain probability` sensor's `source` attribute says which one was used. When no
+probability is available at all the run is **not** skipped — a missing forecast
+is never treated as dry.
 
 ### Restart safety
 
