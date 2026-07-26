@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="brand/icon.png" alt="Irrigation Scheduler" width="96" height="96">
+  <img src="brand/icon.png" alt="Irrigation AI Scheduler" width="96" height="96">
 </p>
 
 <h1 align="center">Irrigation Scheduler</h1>
@@ -217,20 +217,6 @@ Repairs) rather than failing silently:
   removed. Reconfigure the zone to point at the current entity.
 - **AI plan created an overlap** — the proposed plan would have collided on the
   pump; it was rolled back to the previous plan. Please report it.
-
-## Migrating from the YAML package
-
-If you ran the earlier `irrigation.yaml` / `irrigation_ai.yaml` package, there is
-no automatic migration — those `input_*` helpers are yours to keep or delete. Set
-up the integration, recreate your zones, repoint your dashboard, then remove the
-old package. Dashboard mapping:
-
-| Old | New |
-|---|---|
-| `input_number.irrigation_zoneN_duration` | `number.<zone>_duration` |
-| `input_select.irrigation_zoneN_schedule` | `select.<zone>_schedule` |
-| `input_datetime.irrigation_zoneN_start` | `sensor.<zone>_morning_start` (read-only) |
-| `input_text.irrigation_ai_last_summary` | `state_attr('sensor.irrigation_daily_plan', 'narrative')` |
 
 ## Development
 
