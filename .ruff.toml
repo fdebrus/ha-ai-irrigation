@@ -1,6 +1,10 @@
 # The contents of this file is based on https://github.com/home-assistant/core/blob/dev/pyproject.toml
 
-target-version = "py314"
+# py313, not py314: this integration targets HA 2025.6+ / Python 3.13, and the
+# py314 target makes ruff emit PEP 758 (parenthesis-free `except A, B:`) which
+# is a syntax error on Python 3.13 — it would crash on the very HA versions we
+# support.
+target-version = "py313"
 
 # brand/ holds image-generation tooling for the HA brand assets, not
 # integration code; keep it out of the integration's lint surface.

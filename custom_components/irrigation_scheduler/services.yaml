@@ -9,7 +9,7 @@ run_zone:
       selector:
         number:
           min: 1
-          max: 120
+          max: 60
           step: 1
           unit_of_measurement: min
           mode: box

@@ -1,0 +1,514 @@
+# ============================================================
+#  Irrigation - Daily AI check (Claude via l'intégration Anthropic)
+#  Claude gère: jours, durées, 2nd runs, seuil pluie — et
+#  l'activation saisonnière du GAZON (zone 5, arroseur Aiper
+#  IrriSense sur ligne DÉDIÉE — plus rien sur le distributeur).
+#  Les heures de départ restent calculées par HA (échelonnement
+#  déterministe, source d'eau unique).
+#  Garde-fous HA: liste blanche horaires, clamp durées,
+#  capteur d'overlap en dernier filet.
+#  MAJ 2026-07-25: les helpers de durée stockent désormais des
+#  MINUTES (plus de conversion ×60 / ÷60 ici — le modèle répond
+#  en minutes et les helpers sont en minutes).
+#  MAJ 2026-07-26: Gazon retiré du distributeur GARDENA (les
+#  impulsions de passage étaient peu fiables). Le Jardin est
+#  revenu à 3 sorties; le Gazon est une zone normale pilotée
+#  par HA via les boutons IrriSense (start/stop + timer).
+#  AUCUNE action manuelle n'est nécessaire quand l'AI active
+#  ou coupe le gazon — les notifications sont informatives.
+# ============================================================
+
+input_boolean:
+  irrigation_ai_enabled:
+    name: AI daily check
+    icon: mdi:robot
+
+input_text:
+  irrigation_ai_last_summary:
+    name: AI - dernier résumé
+    max: 255
+
+automation ai_check:
+  - id: irrigation_ai_daily_check
+    alias: Irrigation - AI daily check
+    trigger:
+      - platform: time
+        at: "22:30:00"
+    condition:
+      - condition: state
+        entity_id: input_boolean.irrigation_ai_enabled
+        state: "on"
+    action:
+      # ---- 1. Prévisions 5 jours ----
+      - service: weather.get_forecasts
+        target:
+          entity_id: weather.forecast_home
+        data:
+          type: daily
+        response_variable: fc
+
+      # ---- 2. Demander le plan à Claude (JSON brut) ----
+      - action: ai_task.generate_data
+        data:
+          entity_id: ai_task.claude_ai_task
+          task_name: irrigation_daily_check
+          instructions: >-
+            Tu es le régisseur d'arrosage d'un jardin à Waterloo, Belgique.
+            Nous sommes le {{ now().strftime('%d/%m/%Y') }}.
+            Analyse les prévisions et propose le plan (jours, durées, arrosages du
+            soir on/off, seuil pluie, et activation du gazon). Les HEURES de départ
+            sont calculées automatiquement par le système, ne t'en occupe pas.
+            Réponds UNIQUEMENT avec un objet JSON brut sur une ligne, sans balises
+            markdown, selon le FORMAT DE RÉPONSE en fin de message.
+
+            PRÉVISIONS 5 JOURS (t° en °C, pluie en %):
+            {% for d in fc['weather.forecast_home']['forecast'][:5] %}
+            - {{ d.datetime[:10] }}: max {{ d.temperature }}°C,
+              pluie {{ d.precipitation_probability | default(0) }}%
+            {% endfor %}
+
+            ZONES ET PROFILS:
+            1. Jardin (sorties 1-3 du distributeur, durée par sortie,
+               3 m de tuyau par sortie): érable du Japon + nandinas +
+               graminées, PLANTÉ IL Y A 4 MOIS (reprise, motte fragile),
+               mi-ombre, paillis ardoise, haie de conifères concurrente.
+               Régime de base: Daily 15 min.
+               Craint AUTANT l'excès d'eau (phytophthora) que le sec.
+            2. Parking (10 m de tuyau): myrtilliers EN FRUCTIFICATION,
+               bac surélevé plein soleil contre mur blanc.
+               Base: Mon/Wed/Fri 25 min.
+            3. Entrée (17 m de tuyau): spirées établies, bande étroite
+               plein soleil, robustes. Base: Mon/Wed/Fri 15 min.
+            4. Framboisier (5 m de tuyau): jeunes cannes, bac surélevé.
+               Base: Mon/Wed/Fri 20 min.
+            5. Gazon (arroseur Aiper IrriSense sur ligne DÉDIÉE,
+               démarré/arrêté automatiquement par le système — aucune
+               action manuelle): pelouse de graminées de climat frais,
+               actuellement DORMANTE suite à la sécheresse estivale
+               (brune mais vivante). Toutes les zones partagent la même
+               source d'eau (pompe): les sessions ne tournent jamais en
+               même temps (HA échelonne les heures automatiquement).
+
+            RÈGLE SAISONNIÈRE GAZON (c'est TOI qui décides gazon_enabled):
+            - Été sec / canicule: gazon_enabled=false. Une pelouse
+              dormante survit 4-6 semaines sans eau; le pire est le
+              yo-yo (réveils répétés qui épuisent les réserves). Ne
+              JAMAIS alterner on/off d'un jour à l'autre.
+            - Réveil: à partir de fin août / septembre, quand les max
+              repassent durablement sous ~25°C ET que la pluie revient
+              au régime normal belge, passe gazon_enabled=true en
+              régime de reprise: Daily 15-20 min pendant les premières
+              semaines, puis Mon/Wed/Fri 20-30 min (arrosage profond
+              et espacé) une fois la pelouse reverdie.
+            - Si tu actives le gazon alors qu'il était off, dis-le
+              clairement dans "resume".
+            - Une fois le gazon actif en saison, ne le repasse à false
+              que pour l'hivernage ou un retour durable de fortes pluies.
+
+            DÉBITS RÉELS (tuyau microporeux ~2-4 L/h par mètre, pression
+            régulée à 1 bar par réducteurs après chaque vanne). Raisonne
+            en LITRES DÉLIVRÉS: litres = longueur x (2 à 4) x durée / 60.
+            - Jardin: 3 m/sortie -> ~1-2 L par sortie par 10 min. TRÈS
+              faible: même à 30 min, une sortie ne délivre que ~3-6 L.
+            - Parking: 10 m -> ~3-7 L par 10 min.
+            - Entrée: 17 m -> ~6-11 L par 10 min (la ligne la plus
+              productive par minute).
+            - Framboisier: 5 m -> ~2-3 L par 10 min.
+            - Gazon: arroseur rotatif IrriSense (PAS du microporeux),
+              débit nettement supérieur — quelques dizaines de L par
+              10 min sur la surface. Vise des arrosages PROFONDS et
+              espacés plutôt que quotidiens une fois la reprise faite.
+            Cibles indicatives par jour d'arrosage (2nd run compris):
+            Jardin ~5-10 L par sortie, Parking ~10-20 L, Entrée
+            ~10-18 L, Framboisier ~4-8 L.
+            CONSÉQUENCE: n'ajuste JAMAIS uniformément toutes les zones —
+            leurs débits par minute diffèrent d'un facteur 5. Pour
+            donner plus d'eau au Jardin, monte sa durée vers 20-30 min
+            et/ou active son 2nd run; pour l'Entrée, quelques minutes
+            suffisent.
+
+            RÉGLAGES ACTUELS (zone: jours, durée, départ, soir):
+            - Jardin: {{ states('input_select.irrigation_zone1_schedule') }},
+              {{ states('input_number.irrigation_zone1_duration') | int(15) }} min,
+              {{ states('input_datetime.irrigation_zone1_start')[0:5] }},
+              soir {{ states('input_boolean.irrigation_zone1_start2_enabled') }}
+              à {{ states('input_datetime.irrigation_zone1_start2')[0:5] }}
+            - Parking: {{ states('input_select.irrigation_zone2_schedule') }},
+              {{ states('input_number.irrigation_zone2_duration') | int(25) }} min,
+              {{ states('input_datetime.irrigation_zone2_start')[0:5] }},
+              soir {{ states('input_boolean.irrigation_zone2_start2_enabled') }}
+              à {{ states('input_datetime.irrigation_zone2_start2')[0:5] }}
+            - Entrée: {{ states('input_select.irrigation_zone3_schedule') }},
+              {{ states('input_number.irrigation_zone3_duration') | int(15) }} min,
+              {{ states('input_datetime.irrigation_zone3_start')[0:5] }},
+              soir {{ states('input_boolean.irrigation_zone3_start2_enabled') }}
+              à {{ states('input_datetime.irrigation_zone3_start2')[0:5] }}
+            - Framboisier: {{ states('input_select.irrigation_zone4_schedule') }},
+              {{ states('input_number.irrigation_zone4_duration') | int(20) }} min,
+              {{ states('input_datetime.irrigation_zone4_start')[0:5] }},
+              soir {{ states('input_boolean.irrigation_zone4_start2_enabled') }}
+              à {{ states('input_datetime.irrigation_zone4_start2')[0:5] }}
+            - Gazon: ACTUELLEMENT {{ 'ACTIVÉ' if is_state('input_boolean.irrigation_zone5_enabled', 'on') else 'DÉSACTIVÉ' }},
+              {{ states('input_select.irrigation_zone5_schedule') }},
+              {{ states('input_number.irrigation_zone5_duration') | int(20) }} min,
+              {{ states('input_datetime.irrigation_zone5_start')[0:5] }},
+              soir {{ states('input_boolean.irrigation_zone5_start2_enabled') }}
+              à {{ states('input_datetime.irrigation_zone5_start2')[0:5] }}
+
+            Seuil rain-skip actuel: {{ states('input_number.irrigation_rain_threshold') | int }}%
+            (l'arrosage est sauté à l'heure du run si la proba de pluie
+            du jour dépasse ce seuil — mécanisme temps réel, ne pas gérer
+            les skips toi-même).
+
+            RÈGLES:
+            - Canicule (2+ jours consécutifs >= 28°C sans pluie
+              significative): bacs (2,4) en Daily durées réduites,
+              2nd runs utiles activés (1,2,4), Entrée rallongée.
+            - Temps belge normal (<26°C ou pluie régulière): régimes de
+              base, tous les 2nd runs off.
+            - Pluie abondante prévue (>70% plusieurs jours): durées
+              réduites, le rain-skip automatique fait le reste.
+            - Les champs *_schedule: EXACTEMENT une de ces valeurs:
+              "Daily", "Weekdays", "Weekends", "Mon / Wed / Fri",
+              "Tue / Thu / Sat", "Mon / Thu".
+            - Durées: entiers de 5 à 30 min. Ne JAMAIS descendre le
+              Jardin sous Daily 12 min tant qu'il est en reprise (sa
+              ligne de 3 m ne délivre que ~1-2 L par 10 min).
+            - rain_threshold: entier 50-90. Canicule sèche avec bacs
+              abrités: 80-85 (éviter les faux skips). Temps changeant:
+              60-65. Période très pluvieuse: 50-55 (économiser la
+              citerne).
+            - Changer le moins possible: si le plan actuel convient et
+              ne se chevauche pas, renvoie-le tel quel. En particulier,
+              ne change gazon_enabled que sur une vraie bascule
+              saisonnière, pas sur un caprice météo de 2 jours.
+
+            FORMAT DE RÉPONSE (JSON strict, exactement ces clés — PAS
+            d'heures, HA les calcule lui-même):
+            {"jardin_schedule": "Daily", "jardin_duration": 10,
+            "jardin_second_run": true, "parking_schedule": "Daily",
+            "parking_duration": 15, "parking_second_run": true,
+            "entree_schedule": "Mon / Wed / Fri", "entree_duration": 20,
+            "entree_second_run": false, "framboisier_schedule": "Daily",
+            "framboisier_duration": 12, "framboisier_second_run": true,
+            "gazon_enabled": false, "gazon_schedule": "Mon / Wed / Fri",
+            "gazon_duration": 20, "gazon_second_run": false,
+            "rain_threshold": 65,
+            "resume": "explication courte du raisonnement"}
+        response_variable: plan
+
+      # ---- 2b. Parser le JSON (tolère les balises markdown) ----
+      - variables:
+          pd: >-
+            {{ plan.data | replace('```json', '') | replace('```', '')
+               | trim | from_json }}
+          gazon_was_on: "{{ is_state('input_boolean.irrigation_zone5_enabled', 'on') }}"
+
+      # ---- 2c. Calcul déterministe des heures (zéro chevauchement) ----
+      # Occupation (min):
+      #   Jardin = 3*durée + 2 gaps (distributeur à 3 sorties,
+      #            le pulse ne sert plus que si une sortie est
+      #            désactivée — négligé, la marge couvre)
+      #   Gazon  = durée (zone simple sur ligne dédiée IrriSense)
+      #   autres = durée.
+      # Source d'eau unique (pompe): on échelonne dans l'ordre
+      # Jardin -> Gazon -> Parking -> Entrée -> Framboisier avec 5 min
+      # de marge. Matin à partir de 05:30, soir à partir de 19:00.
+      # Le créneau Gazon est réservé même si gazon_enabled=false (simple
+      # et sûr; ça décale juste les autres zones de quelques minutes).
+      - variables:
+          durs:
+            jardin: "{{ [ [pd.jardin_duration | int(15), 5] | max, 30 ] | min }}"
+            parking: "{{ [ [pd.parking_duration | int(25), 5] | max, 30 ] | min }}"
+            entree: "{{ [ [pd.entree_duration | int(15), 5] | max, 30 ] | min }}"
+            framboisier: "{{ [ [pd.framboisier_duration | int(20), 5] | max, 30 ] | min }}"
+            gazon: "{{ [ [pd.gazon_duration | int(20), 5] | max, 30 ] | min }}"
+          gap: "{{ states('input_number.jardin_gap') | int(10) }}"
+      - variables:
+          # occupation en minutes par zone
+          occ:
+            jardin: "{{ (durs.jardin | int) * 3 + (((gap | int) * 2) / 60) | round(0, 'ceil') | int + 1 }}"
+            gazon: "{{ (durs.gazon | int) + 1 }}"
+            parking: "{{ durs.parking | int }}"
+            entree: "{{ durs.entree | int }}"
+            framboisier: "{{ durs.framboisier | int }}"
+          margin: 5
+      - variables:
+          # heures de départ successives, en minutes depuis minuit
+          m_jardin: "{{ 5*60 + 30 }}"
+      - variables:
+          m_gazon: "{{ m_jardin | int + occ.jardin | int + margin }}"
+      - variables:
+          m_parking: "{{ m_gazon | int + occ.gazon | int + margin }}"
+      - variables:
+          m_entree: "{{ m_parking | int + occ.parking | int + margin }}"
+      - variables:
+          m_framboisier: "{{ m_entree | int + occ.entree | int + margin }}"
+          # soir : même ordre, base 19:00
+          e_jardin: "{{ 19*60 }}"
+      - variables:
+          e_gazon: "{{ e_jardin | int + occ.jardin | int + margin }}"
+      - variables:
+          e_parking: "{{ e_gazon | int + occ.gazon | int + margin }}"
+      - variables:
+          e_entree: "{{ e_parking | int + occ.parking | int + margin }}"
+      - variables:
+          e_framboisier: "{{ e_entree | int + occ.entree | int + margin }}"
+
+      # ---- 2d. Écrire les heures calculées ----
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.irrigation_zone1_start
+        data:
+          time: >-
+            {{ '%02d:%02d:00' | format((m_jardin | int // 60) % 24, m_jardin | int % 60) }}
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.irrigation_zone5_start
+        data:
+          time: >-
+            {{ '%02d:%02d:00' | format((m_gazon | int // 60) % 24, m_gazon | int % 60) }}
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.irrigation_zone2_start
+        data:
+          time: >-
+            {{ '%02d:%02d:00' | format((m_parking | int // 60) % 24, m_parking | int % 60) }}
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.irrigation_zone3_start
+        data:
+          time: >-
+            {{ '%02d:%02d:00' | format((m_entree | int // 60) % 24, m_entree | int % 60) }}
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.irrigation_zone4_start
+        data:
+          time: >-
+            {{ '%02d:%02d:00' | format((m_framboisier | int // 60) % 24, m_framboisier | int % 60) }}
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.irrigation_zone1_start2
+        data:
+          time: >-
+            {{ '%02d:%02d:00' | format((e_jardin | int // 60) % 24, e_jardin | int % 60) }}
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.irrigation_zone5_start2
+        data:
+          time: >-
+            {{ '%02d:%02d:00' | format((e_gazon | int // 60) % 24, e_gazon | int % 60) }}
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.irrigation_zone2_start2
+        data:
+          time: >-
+            {{ '%02d:%02d:00' | format((e_parking | int // 60) % 24, e_parking | int % 60) }}
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.irrigation_zone3_start2
+        data:
+          time: >-
+            {{ '%02d:%02d:00' | format((e_entree | int // 60) % 24, e_entree | int % 60) }}
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.irrigation_zone4_start2
+        data:
+          time: >-
+            {{ '%02d:%02d:00' | format((e_framboisier | int // 60) % 24, e_framboisier | int % 60) }}
+      # ---- 3. Appliquer, avec validation par champ ----
+      # JARDIN
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.irrigation_zone1_schedule
+        data:
+          option: >-
+            {% set v = pd.jardin_schedule | trim %}
+            {{ v if v in ['Daily', 'Weekdays', 'Weekends', 'Mon / Wed / Fri',
+                        'Tue / Thu / Sat', 'Mon / Thu']
+               else states('input_select.irrigation_zone1_schedule') }}
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.irrigation_zone1_duration
+        data:
+          # Le modèle répond en minutes; le helper stocke des minutes.
+          value: "{{ [ [pd.jardin_duration | int(15), 5] | max, 30 ] | min }}"
+      - service: >-
+          input_boolean.turn_{{ 'on' if pd.jardin_second_run else 'off' }}
+        target:
+          entity_id: input_boolean.irrigation_zone1_start2_enabled
+
+      # PARKING
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.irrigation_zone2_schedule
+        data:
+          option: >-
+            {% set v = pd.parking_schedule | trim %}
+            {{ v if v in ['Daily', 'Weekdays', 'Weekends', 'Mon / Wed / Fri',
+                        'Tue / Thu / Sat', 'Mon / Thu']
+               else states('input_select.irrigation_zone2_schedule') }}
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.irrigation_zone2_duration
+        data:
+          # Le modèle répond en minutes; le helper stocke des minutes.
+          value: "{{ [ [pd.parking_duration | int(25), 5] | max, 30 ] | min }}"
+      - service: >-
+          input_boolean.turn_{{ 'on' if pd.parking_second_run else 'off' }}
+        target:
+          entity_id: input_boolean.irrigation_zone2_start2_enabled
+
+      # ENTRÉE
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.irrigation_zone3_schedule
+        data:
+          option: >-
+            {% set v = pd.entree_schedule | trim %}
+            {{ v if v in ['Daily', 'Weekdays', 'Weekends', 'Mon / Wed / Fri',
+                        'Tue / Thu / Sat', 'Mon / Thu']
+               else states('input_select.irrigation_zone3_schedule') }}
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.irrigation_zone3_duration
+        data:
+          # Le modèle répond en minutes; le helper stocke des minutes.
+          value: "{{ [ [pd.entree_duration | int(15), 5] | max, 30 ] | min }}"
+      - service: >-
+          input_boolean.turn_{{ 'on' if pd.entree_second_run else 'off' }}
+        target:
+          entity_id: input_boolean.irrigation_zone3_start2_enabled
+
+      # FRAMBOISIER
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.irrigation_zone4_schedule
+        data:
+          option: >-
+            {% set v = pd.framboisier_schedule | trim %}
+            {{ v if v in ['Daily', 'Weekdays', 'Weekends', 'Mon / Wed / Fri',
+                        'Tue / Thu / Sat', 'Mon / Thu']
+               else states('input_select.irrigation_zone4_schedule') }}
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.irrigation_zone4_duration
+        data:
+          # Le modèle répond en minutes; le helper stocke des minutes.
+          value: "{{ [ [pd.framboisier_duration | int(20), 5] | max, 30 ] | min }}"
+      - service: >-
+          input_boolean.turn_{{ 'on' if pd.framboisier_second_run else 'off' }}
+        target:
+          entity_id: input_boolean.irrigation_zone4_start2_enabled
+
+      # GAZON (zone 5 — activation saisonnière décidée par l'AI)
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.irrigation_zone5_schedule
+        data:
+          option: >-
+            {% set v = pd.gazon_schedule | trim %}
+            {{ v if v in ['Daily', 'Weekdays', 'Weekends', 'Mon / Wed / Fri',
+                        'Tue / Thu / Sat', 'Mon / Thu']
+               else states('input_select.irrigation_zone5_schedule') }}
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.irrigation_zone5_duration
+        data:
+          # Le modèle répond en minutes; le helper stocke des minutes.
+          value: "{{ [ [pd.gazon_duration | int(20), 5] | max, 30 ] | min }}"
+      - service: >-
+          input_boolean.turn_{{ 'on' if pd.gazon_second_run else 'off' }}
+        target:
+          entity_id: input_boolean.irrigation_zone5_start2_enabled
+      - service: >-
+          input_boolean.turn_{{ 'on' if pd.gazon_enabled else 'off' }}
+        target:
+          entity_id: input_boolean.irrigation_zone5_enabled
+
+      # AI vient de réveiller le gazon -> purement informatif,
+      # la ligne dédiée IrriSense démarre toute seule.
+      - if:
+          - condition: template
+            value_template: "{{ pd.gazon_enabled and not gazon_was_on }}"
+        then:
+          - service: persistent_notification.create
+            data:
+              title: "🌱 Gazon réactivé"
+              message: >-
+                L'AI a réactivé l'arrosage du gazon ({{ pd.gazon_schedule }},
+                {{ pd.gazon_duration | int }} min). L'arroseur Aiper
+                IrriSense démarrera automatiquement — rien à faire.
+              notification_id: irrigation_gazon_wakeup
+      # AI vient de couper le gazon -> informatif également
+      - if:
+          - condition: template
+            value_template: "{{ (not pd.gazon_enabled) and gazon_was_on }}"
+        then:
+          - service: persistent_notification.create
+            data:
+              title: "🍂 Gazon désactivé"
+              message: >-
+                L'AI a coupé l'arrosage du gazon (dormance ou hivernage).
+                L'arroseur IrriSense ne sera plus démarré — rien à faire.
+              notification_id: irrigation_gazon_sleep
+
+      # RAIN THRESHOLD
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.irrigation_rain_threshold
+        data:
+          value: "{{ [ [pd.rain_threshold | int(65), 50] | max, 90 ] | min }}"
+
+      # ---- 4. Tracer et notifier ----
+      - service: input_text.set_value
+        target:
+          entity_id: input_text.irrigation_ai_last_summary
+        data:
+          value: "{{ pd.resume | truncate(250) }}"
+      - service: persistent_notification.create
+        data:
+          title: "🤖 Arrosage - plan du jour"
+          message: >-
+            {{ pd.resume }}
+
+            Jardin: {{ pd.jardin_schedule }} · {{ pd.jardin_duration | int }}
+            min · {{ states('input_datetime.irrigation_zone1_start')[0:5] }}{{
+            ' + ' ~ states('input_datetime.irrigation_zone1_start2')[0:5]
+            if pd.jardin_second_run }} |
+            Gazon: {{ 'OFF (dormant)' if not pd.gazon_enabled else
+            pd.gazon_schedule ~ ' · ' ~ (pd.gazon_duration | int) ~ ' min · ' ~
+            states('input_datetime.irrigation_zone5_start')[0:5] ~ (
+            ' + ' ~ states('input_datetime.irrigation_zone5_start2')[0:5]
+            if pd.gazon_second_run else '') }} |
+            Parking: {{ pd.parking_schedule }} · {{ pd.parking_duration | int }}
+            min · {{ states('input_datetime.irrigation_zone2_start')[0:5] }}{{
+            ' + ' ~ states('input_datetime.irrigation_zone2_start2')[0:5]
+            if pd.parking_second_run }} |
+            Entrée: {{ pd.entree_schedule }} · {{ pd.entree_duration | int }}
+            min · {{ states('input_datetime.irrigation_zone3_start')[0:5] }}{{
+            ' + ' ~ states('input_datetime.irrigation_zone3_start2')[0:5]
+            if pd.entree_second_run }} |
+            Framboisier: {{ pd.framboisier_schedule }} · {{ pd.framboisier_duration | int }}
+            min · {{ states('input_datetime.irrigation_zone4_start')[0:5] }}{{
+            ' + ' ~ states('input_datetime.irrigation_zone4_start2')[0:5]
+            if pd.framboisier_second_run }} |
+            Rain skip: {{ pd.rain_threshold | int }}%
+          notification_id: irrigation_ai_plan
+
+      # ---- 5. Filet final: vérifier l'overlap après application ----
+      - delay: "00:00:05"
+      - if:
+          - condition: state
+            entity_id: binary_sensor.irrigation_schedule_overlap
+            state: "on"
+        then:
+          - service: persistent_notification.create
+            data:
+              title: "⚠️ Plan AI en conflit"
+              message: >-
+                Le plan appliqué crée un chevauchement:
+                {{ state_attr('binary_sensor.irrigation_schedule_overlap',
+                'conflicts') }}. Corrige les heures manuellement ou relance
+                le check.
+              notification_id: irrigation_ai_conflict

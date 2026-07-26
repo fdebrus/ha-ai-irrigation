@@ -1,16 +1,14 @@
 """Tests for the scheduler's dangerous paths.
 
-These are the failure modes that make this integration worth more than the YAML
-package it replaces: a valve left open across a restart, and manual runs being
-silently adopted (or, worse, our own valve commands being adopted back). The
-scheduler is driven directly here -- no config entry -- so each behaviour is
-isolated. Time is controlled with freezegun; timers are fired with
-``async_fire_time_changed`` rather than real waits.
+Restart recovery, adoption (including that button zones are never adopted),
+self-driven suppression, one-pump enforcement, and the tick. The scheduler is
+driven directly; time is controlled with freezegun.
 """
 
 from __future__ import annotations
 
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from homeassistant.const import ATTR_ENTITY_ID
@@ -20,400 +18,411 @@ from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.irrigation_scheduler.const import (
     DOMAIN,
-    SOURCE_ADOPTED,
-    SOURCE_MANUAL,
     STORAGE_KEY,
     STORAGE_VERSION,
 )
-from custom_components.irrigation_scheduler.models import HubRuntime, ZoneRuntime
+from custom_components.irrigation_scheduler.drivers import ButtonDriver, ValveDriver
+from custom_components.irrigation_scheduler.models import (
+    DriverType,
+    HubState,
+    SchedulePreset,
+    ZoneSpec,
+    ZoneState,
+)
 from custom_components.irrigation_scheduler.scheduler import IrrigationScheduler
 
 if TYPE_CHECKING:
+    from datetime import time
+
     from homeassistant.core import HomeAssistant, ServiceCall
 
-VALVE = "valve.test"
+
+def _valve_zone(sid: str, *, order: int = 1, adopt: bool = False) -> ZoneState:
+    spec = ZoneSpec(sid, sid.upper(), order, DriverType.VALVE, adopt_manual_runs=adopt)
+    return ZoneState(spec=spec, duration_minutes=15)
 
 
-def _zone(**kwargs) -> ZoneRuntime:
-    """Build a zone backed by ``valve.test``."""
-    defaults = {
-        "subentry_id": "zone1",
-        "name": "Test",
-        "valve_entity_id": VALVE,
-    }
-    return ZoneRuntime(**{**defaults, **kwargs})
+def _button_zone(sid: str, *, order: int = 1, adopt: bool = False) -> ZoneState:
+    spec = ZoneSpec(
+        sid,
+        sid.upper(),
+        order,
+        DriverType.BUTTON,
+        settle_minutes=1,
+        adopt_manual_runs=adopt,
+    )
+    return ZoneState(spec=spec, duration_minutes=15)
 
 
-def _wire_valve(hass: HomeAssistant) -> list[tuple[str, str]]:
-    """Register a fake valve whose state follows open/close commands.
-
-    Returns the list that records ``("open"|"close", entity_id)`` for each call,
-    so a test can assert what the scheduler actually sent to the valve.
-    """
+def _wire(hass: HomeAssistant) -> list[tuple[str, str]]:
+    """Register valve + button services following state; record actions."""
     calls: list[tuple[str, str]] = []
 
     async def _open(call: ServiceCall) -> None:
-        entity_id = call.data[ATTR_ENTITY_ID]
-        calls.append(("open", entity_id))
-        hass.states.async_set(entity_id, "open")
+        eid = call.data[ATTR_ENTITY_ID]
+        calls.append(("open", eid))
+        hass.states.async_set(eid, "open")
 
     async def _close(call: ServiceCall) -> None:
-        entity_id = call.data[ATTR_ENTITY_ID]
-        calls.append(("close", entity_id))
-        hass.states.async_set(entity_id, "closed")
+        eid = call.data[ATTR_ENTITY_ID]
+        calls.append(("close", eid))
+        hass.states.async_set(eid, "closed")
+
+    async def _press(call: ServiceCall) -> None:
+        calls.append(("press", call.data[ATTR_ENTITY_ID]))
 
     hass.services.async_register("valve", "open_valve", _open)
     hass.services.async_register("valve", "close_valve", _close)
+    hass.services.async_register("button", "press", _press)
     return calls
 
 
-def _store_run(hass_storage: dict, ends_at, source: str = "schedule") -> None:
-    """Seed the run store as if a run was live when HA shut down."""
+def _make(
+    hass: HomeAssistant,
+    zones: dict[str, ZoneState],
+    hub: HubState | None = None,
+    *,
+    pump_sensor_id: str | None = None,
+) -> IrrigationScheduler:
+    sched = IrrigationScheduler(
+        hass, hub or HubState(), zones, None, pump_sensor_id=pump_sensor_id
+    )
+    drivers = {}
+    for zid, zone in zones.items():
+        if zone.spec.driver is DriverType.BUTTON:
+            drivers[zid] = ButtonDriver(
+                hass, f"button.{zid}_start", f"button.{zid}_stop"
+            )
+        else:
+            drivers[zid] = ValveDriver(hass, f"valve.{zid}", sched.mark_self_driven)
+    sched.set_drivers(drivers)
+    return sched
+
+
+def _store_run(hass_storage: dict, sid: str, ends_at, source: str = "schedule") -> None:
     hass_storage[STORAGE_KEY] = {
         "version": STORAGE_VERSION,
         "minor_version": 1,
         "key": STORAGE_KEY,
-        "data": {"runs": {"zone1": {"ends_at": ends_at.isoformat(), "source": source}}},
+        "data": {"runs": {sid: {"ends_at": ends_at.isoformat(), "source": source}}},
     }
 
 
-# ---------------------------------------------------------------------------
-# Restart recovery -- invariant 2
-# ---------------------------------------------------------------------------
-async def test_restart_recovery_closes_a_run_that_expired_while_down(
+# --- restart recovery (invariant 3) ----------------------------------------
+async def test_restart_recovery_closes_an_expired_run(
     hass: HomeAssistant, hass_storage: dict, freezer
 ) -> None:
-    """A stored run whose end time already passed must close the valve."""
+    """A stored run past its end closes the valve on startup."""
     freezer.move_to("2026-07-27 06:10:00+00:00")
-    zone = _zone()
-    calls = _wire_valve(hass)
-    hass.states.async_set(VALVE, "open")  # still open from before the restart
-    _store_run(hass_storage, dt_util.utcnow() - timedelta(minutes=5))
+    zones = {"z1": _valve_zone("z1")}
+    calls = _wire(hass)
+    hass.states.async_set("valve.z1", "open")
+    _store_run(hass_storage, "z1", dt_util.utcnow() - timedelta(minutes=5))
 
-    scheduler = IrrigationScheduler(hass, HubRuntime(), {"zone1": zone}, None)
-    await scheduler.async_start()
+    sched = _make(hass, zones)
+    await sched.async_start()
     await hass.async_block_till_done()
 
-    assert ("close", VALVE) in calls
-    assert zone.running_until is None
-    assert "zone1" not in scheduler._unsub_stop
+    assert ("close", "valve.z1") in calls
+    assert zones["z1"].running_until is None
+    assert "z1" not in sched._unsub_stop
+    await sched.async_shutdown()
 
-    await scheduler.async_shutdown()
 
-
-async def test_restart_recovery_rearms_a_run_still_in_the_future(
+async def test_restart_recovery_rearms_a_future_run(
     hass: HomeAssistant, hass_storage: dict, freezer
 ) -> None:
-    """A stored run still in the future must re-arm its stop timer, not reopen."""
+    """A stored future run re-arms its stop timer and closes when it arrives."""
     freezer.move_to("2026-07-27 06:00:00+00:00")
-    zone = _zone()
-    calls = _wire_valve(hass)
-    hass.states.async_set(VALVE, "open")
+    zones = {"z1": _valve_zone("z1")}
+    calls = _wire(hass)
+    hass.states.async_set("valve.z1", "open")
     ends_at = dt_util.utcnow() + timedelta(minutes=10)
-    _store_run(hass_storage, ends_at)
+    _store_run(hass_storage, "z1", ends_at)
 
-    scheduler = IrrigationScheduler(hass, HubRuntime(), {"zone1": zone}, None)
-    await scheduler.async_start()
+    sched = _make(hass, zones)
+    await sched.async_start()
     await hass.async_block_till_done()
 
-    # Re-armed: tracked, no valve command sent for a run that is already live.
-    assert "zone1" in scheduler._unsub_stop
-    assert zone.running_until == ends_at
+    assert "z1" in sched._unsub_stop
+    assert zones["z1"].running_until == ends_at
     assert calls == []
 
-    # When the end time arrives the re-armed timer closes the valve.
     freezer.move_to(ends_at + timedelta(seconds=1))
     async_fire_time_changed(hass)
     await hass.async_block_till_done()
-
-    assert ("close", VALVE) in calls
-    assert zone.running_until is None
-
-    await scheduler.async_shutdown()
+    assert ("close", "valve.z1") in calls
+    assert zones["z1"].running_until is None
+    await sched.async_shutdown()
 
 
-# ---------------------------------------------------------------------------
-# Manual-run adoption -- invariant 4
-# ---------------------------------------------------------------------------
+# --- adoption (invariant 5) ------------------------------------------------
 async def test_manual_open_is_adopted_when_enabled(
     hass: HomeAssistant, freezer
 ) -> None:
-    """With adoption on, an external open starts a tracked, closable run."""
+    """A valve opened by hand becomes a tracked run when adoption is on."""
     freezer.move_to("2026-07-27 06:00:00+00:00")
-    zone = _zone(adopt_manual_runs=True)
-    calls = _wire_valve(hass)
-    hass.states.async_set(VALVE, "closed")
+    zones = {"z1": _valve_zone("z1", adopt=True)}
+    calls = _wire(hass)
+    hass.states.async_set("valve.z1", "closed")
+    sched = _make(hass, zones)
+    await sched.async_start()
 
-    scheduler = IrrigationScheduler(hass, HubRuntime(), {"zone1": zone}, None)
-    await scheduler.async_start()
-
-    hass.states.async_set(VALVE, "open")  # e.g. HomeKit / Google Home
+    hass.states.async_set("valve.z1", "open")
     await hass.async_block_till_done()
 
-    assert zone.is_running
-    assert zone.running_source == SOURCE_ADOPTED
-    assert "zone1" in scheduler._unsub_stop
-    # Adoption tracks the existing run; it must not command the valve open.
-    assert ("open", VALVE) not in calls
-
-    await scheduler.async_shutdown()
+    assert zones["z1"].is_running
+    assert zones["z1"].running_source == "adopted"
+    assert ("open", "valve.z1") not in calls  # adoption does not re-open
+    await sched.async_shutdown()
 
 
 async def test_manual_open_is_ignored_when_disabled(
     hass: HomeAssistant, freezer
 ) -> None:
-    """With adoption off, an external open is left untouched."""
+    """With adoption off, a hand-opened valve is left untracked."""
     freezer.move_to("2026-07-27 06:00:00+00:00")
-    zone = _zone(adopt_manual_runs=False)
-    _wire_valve(hass)
-    hass.states.async_set(VALVE, "closed")
+    zones = {"z1": _valve_zone("z1", adopt=False)}
+    _wire(hass)
+    hass.states.async_set("valve.z1", "closed")
+    sched = _make(hass, zones)
+    await sched.async_start()
 
-    scheduler = IrrigationScheduler(hass, HubRuntime(), {"zone1": zone}, None)
-    await scheduler.async_start()
-
-    hass.states.async_set(VALVE, "open")
+    hass.states.async_set("valve.z1", "open")
     await hass.async_block_till_done()
 
-    assert not zone.is_running
-    assert "zone1" not in scheduler._unsub_stop
+    assert not zones["z1"].is_running
+    await sched.async_shutdown()
 
-    await scheduler.async_shutdown()
+
+async def test_button_zone_is_never_watched_for_adoption(
+    hass: HomeAssistant, freezer
+) -> None:
+    """A button zone has no state, so the adoption listener skips it entirely."""
+    freezer.move_to("2026-07-27 06:00:00+00:00")
+    zones = {"z1": _button_zone("z1", adopt=True)}
+    _wire(hass)
+    sched = _make(hass, zones)
+    await sched.async_start()
+
+    assert sched._unsub_watch is None  # nothing to watch
+    await sched.async_shutdown()
 
 
 async def test_our_own_valve_open_is_not_adopted(hass: HomeAssistant, freezer) -> None:
-    """A valve opened by the scheduler itself must not be adopted back.
-
-    ``adopt_manual_runs`` is on and the zone is idle, so without the
-    ``_self_driven`` guard the state change would be adopted. The guard must
-    suppress it.
-    """
+    """A valve the scheduler opened itself is not adopted back."""
     freezer.move_to("2026-07-27 06:00:00+00:00")
-    zone = _zone(adopt_manual_runs=True)
-    _wire_valve(hass)
-    hass.states.async_set(VALVE, "closed")
+    zones = {"z1": _valve_zone("z1", adopt=True)}
+    _wire(hass)
+    hass.states.async_set("valve.z1", "closed")
+    sched = _make(hass, zones)
+    await sched.async_start()
 
-    scheduler = IrrigationScheduler(hass, HubRuntime(), {"zone1": zone}, None)
-    await scheduler.async_start()
-
-    # Drive the valve ourselves without setting up a run first.
-    await scheduler._async_set_valve(zone, open_valve=True)
+    await sched.drivers["z1"].async_start()  # marks self-driven, opens the valve
     await hass.async_block_till_done()
 
-    assert not zone.is_running  # not adopted despite adopt=on and valve now open
-    assert VALVE in scheduler._self_driven
+    assert not zones["z1"].is_running
+    assert "valve.z1" in sched._self_driven
+    await sched.async_shutdown()
 
-    await scheduler.async_shutdown()
 
-
-# ---------------------------------------------------------------------------
-# Stop cancels the pending close
-# ---------------------------------------------------------------------------
-async def test_stopping_a_zone_cancels_its_pending_stop_timer(
+# --- run control -----------------------------------------------------------
+async def test_stop_cancels_the_pending_stop_timer(
     hass: HomeAssistant, freezer
 ) -> None:
-    """Stopping a zone cancels the armed close so it cannot fire later."""
+    """Stopping a zone cancels its armed close so it cannot fire later."""
     freezer.move_to("2026-07-27 06:00:00+00:00")
-    zone = _zone()
-    calls = _wire_valve(hass)
-    hass.states.async_set(VALVE, "closed")
+    zones = {"z1": _valve_zone("z1")}
+    calls = _wire(hass)
+    hass.states.async_set("valve.z1", "closed")
+    sched = _make(hass, zones)
+    await sched.async_start()
 
-    scheduler = IrrigationScheduler(hass, HubRuntime(), {"zone1": zone}, None)
-    await scheduler.async_start()
+    await sched.async_start_zone("z1", source="manual")
+    assert "z1" in sched._unsub_stop
+    ends_at = zones["z1"].running_until
 
-    await scheduler.async_start_zone("zone1", source=SOURCE_MANUAL)
-    assert "zone1" in scheduler._unsub_stop
-    ends_at = zone.running_until
+    await sched.async_stop_zone("z1")
+    assert "z1" not in sched._unsub_stop
+    assert zones["z1"].running_until is None
 
-    await scheduler.async_stop_zone("zone1")
-    assert "zone1" not in scheduler._unsub_stop
-    assert zone.running_until is None
-    assert ("close", VALVE) in calls
-
-    # The cancelled timer must not fire a second close after the old end time.
-    closes = calls.count(("close", VALVE))
+    closes = calls.count(("close", "valve.z1"))
     freezer.move_to(ends_at + timedelta(seconds=1))
     async_fire_time_changed(hass)
     await hass.async_block_till_done()
-    assert calls.count(("close", VALVE)) == closes
-
-    await scheduler.async_shutdown()
-
-
-# ---------------------------------------------------------------------------
-# Sequential mode -- gap 2
-# ---------------------------------------------------------------------------
-def _two_zones() -> dict[str, ZoneRuntime]:
-    """Two zones on separate valves."""
-    return {
-        "zone1": _zone(subentry_id="zone1", valve_entity_id="valve.z1"),
-        "zone2": _zone(subentry_id="zone2", valve_entity_id="valve.z2"),
-    }
+    assert calls.count(("close", "valve.z1")) == closes
+    await sched.async_shutdown()
 
 
-async def test_sequential_mode_queues_an_overlapping_start(
+async def test_starting_a_zone_stops_any_other_running_zone(
     hass: HomeAssistant, freezer
 ) -> None:
-    """With sequential on, a second start queues and runs when the first stops."""
+    """One pump: starting a second zone stops the first (invariant 2)."""
     freezer.move_to("2026-07-27 06:00:00+00:00")
-    zones = _two_zones()
-    calls = _wire_valve(hass)
+    zones = {"z1": _valve_zone("z1", order=1), "z2": _valve_zone("z2", order=2)}
+    calls = _wire(hass)
     hass.states.async_set("valve.z1", "closed")
     hass.states.async_set("valve.z2", "closed")
+    sched = _make(hass, zones)
+    await sched.async_start()
 
-    scheduler = IrrigationScheduler(hass, HubRuntime(sequential=True), zones, None)
-    await scheduler.async_start()
-
-    await scheduler.async_start_zone("zone1", source=SOURCE_MANUAL)
-    assert zones["zone1"].is_running
-
-    await scheduler.async_start_zone("zone2", source=SOURCE_MANUAL)
+    await sched.async_start_zone("z1", source="manual")
+    await sched.async_start_zone("z2", source="manual")
     await hass.async_block_till_done()
-    # zone2 waits its turn; its valve is not opened yet.
-    assert not zones["zone2"].is_running
-    assert zones["zone2"].queued
-    assert ("open", "valve.z2") not in calls
 
-    # zone1 finishing releases zone2.
-    await scheduler.async_stop_zone("zone1")
+    assert not zones["z1"].is_running
+    assert zones["z2"].is_running
+    assert ("close", "valve.z1") in calls
+    await sched.async_shutdown()
+
+
+# --- tick ------------------------------------------------------------------
+async def _fire_tick(hass: HomeAssistant) -> None:
+    async_fire_time_changed(hass)
     await hass.async_block_till_done()
-    assert zones["zone2"].is_running
-    assert not zones["zone2"].queued
-    assert ("open", "valve.z2") in calls
-
-    await scheduler.async_shutdown()
 
 
-async def test_non_sequential_mode_allows_zones_to_overlap(
+def _now_time(hass: HomeAssistant) -> time:
+    return dt_util.as_local(dt_util.utcnow()).time().replace(second=0, microsecond=0)
+
+
+async def test_tick_starts_a_zone_whose_slot_is_due(
     hass: HomeAssistant, freezer
 ) -> None:
-    """With sequential off, overlapping starts both run."""
+    """At a zone's morning start, the tick runs it."""
     freezer.move_to("2026-07-27 06:00:00+00:00")
-    zones = _two_zones()
-    _wire_valve(hass)
+    zones = {"z1": _valve_zone("z1")}
+    zones["z1"].schedule = SchedulePreset.DAILY
+    zones["z1"].morning_start = _now_time(hass)
+    _wire(hass)
     hass.states.async_set("valve.z1", "closed")
-    hass.states.async_set("valve.z2", "closed")
+    sched = _make(hass, zones)
+    await sched.async_start()
 
-    scheduler = IrrigationScheduler(hass, HubRuntime(sequential=False), zones, None)
-    await scheduler.async_start()
-
-    await scheduler.async_start_zone("zone1", source=SOURCE_MANUAL)
-    await scheduler.async_start_zone("zone2", source=SOURCE_MANUAL)
-    await hass.async_block_till_done()
-
-    assert zones["zone1"].is_running
-    assert zones["zone2"].is_running
-    assert not zones["zone2"].queued
-
-    await scheduler.async_shutdown()
+    await _fire_tick(hass)
+    assert zones["z1"].is_running
+    await sched.async_shutdown()
 
 
-async def test_adopted_run_bypasses_the_sequential_queue(
-    hass: HomeAssistant, freezer
-) -> None:
-    """An externally opened valve is adopted at once, never queued.
-
-    The valve is already physically open, so deferring it would leave it
-    running untracked -- adoption must take effect immediately even mid-run.
-    """
+async def test_tick_skips_for_rain(hass: HomeAssistant, freezer) -> None:
+    """A rain probability over the threshold skips the run."""
     freezer.move_to("2026-07-27 06:00:00+00:00")
-    zones = _two_zones()
-    zones["zone2"].adopt_manual_runs = True
-    _wire_valve(hass)
+    zones = {"z1": _valve_zone("z1")}
+    zones["z1"].morning_start = _now_time(hass)
+    _wire(hass)
     hass.states.async_set("valve.z1", "closed")
-    hass.states.async_set("valve.z2", "closed")
+    sched = _make(hass, zones, HubState(rain_threshold=65))
+    sched.coordinator = SimpleNamespace(data=80.0)
+    await sched.async_start()
 
-    scheduler = IrrigationScheduler(hass, HubRuntime(sequential=True), zones, None)
-    await scheduler.async_start()
-
-    await scheduler.async_start_zone("zone1", source=SOURCE_MANUAL)
-    hass.states.async_set("valve.z2", "open")  # opened by hand, mid zone1 run
-    await hass.async_block_till_done()
-
-    assert zones["zone2"].is_running
-    assert zones["zone2"].running_source == SOURCE_ADOPTED
-    assert not zones["zone2"].queued
-
-    await scheduler.async_shutdown()
+    await _fire_tick(hass)
+    assert not zones["z1"].is_running
+    assert zones["z1"].last_skipped_reason == "rain_expected"
+    await sched.async_shutdown()
 
 
-# ---------------------------------------------------------------------------
-# Valve unavailability -- gap 4
-# ---------------------------------------------------------------------------
-async def test_start_is_skipped_when_the_valve_is_unavailable(
+# --- pump watchdog (item 5) ------------------------------------------------
+async def test_no_flow_flags_a_dry_pump_past_the_grace_window(
     hass: HomeAssistant, freezer
 ) -> None:
-    """An unavailable valve skips the run and reports valve_unavailable."""
+    """A zone open past the grace window with the pump off flags no-flow."""
     freezer.move_to("2026-07-27 06:00:00+00:00")
-    zone = _zone()
-    calls = _wire_valve(hass)
-    hass.states.async_set(VALVE, "unavailable")
+    zones = {"z1": _valve_zone("z1")}
+    _wire(hass)
+    hass.states.async_set("valve.z1", "closed")
+    hass.states.async_set("binary_sensor.pump", "off")
+    sched = _make(hass, zones, pump_sensor_id="binary_sensor.pump")
+    await sched.async_start()
 
-    scheduler = IrrigationScheduler(hass, HubRuntime(), {"zone1": zone}, None)
-    await scheduler.async_start()
+    await sched.async_start_zone("z1")
+    assert zones["z1"].is_running
+    assert not sched.no_flow  # just started, still inside the grace window
 
-    await scheduler.async_start_zone("zone1", source=SOURCE_MANUAL)
-    await hass.async_block_till_done()
-
-    assert not zone.is_running
-    assert zone.last_skipped_reason == "valve_unavailable"
-    assert ("open", VALVE) not in calls
-
-    await scheduler.async_shutdown()
+    freezer.tick(timedelta(minutes=4))
+    await _fire_tick(hass)
+    assert sched.no_flow
+    await sched.async_shutdown()
 
 
-async def test_start_is_skipped_when_the_valve_entity_is_missing(
+async def test_no_flow_clears_when_the_pump_reports_flow(
     hass: HomeAssistant, freezer
 ) -> None:
-    """A valve entity that no longer exists skips the run, not opens nothing."""
+    """The flag clears as soon as the pump sensor turns on."""
     freezer.move_to("2026-07-27 06:00:00+00:00")
-    zone = _zone()
-    calls = _wire_valve(hass)
-    # No state is set for VALVE: the entity does not exist.
+    zones = {"z1": _valve_zone("z1")}
+    _wire(hass)
+    hass.states.async_set("valve.z1", "closed")
+    hass.states.async_set("binary_sensor.pump", "off")
+    sched = _make(hass, zones, pump_sensor_id="binary_sensor.pump")
+    await sched.async_start()
+    await sched.async_start_zone("z1")
 
-    scheduler = IrrigationScheduler(hass, HubRuntime(), {"zone1": zone}, None)
-    await scheduler.async_start()
+    freezer.tick(timedelta(minutes=4))
+    await _fire_tick(hass)
+    assert sched.no_flow
 
-    await scheduler.async_start_zone("zone1", source=SOURCE_MANUAL)
-    await hass.async_block_till_done()
-
-    assert not zone.is_running
-    assert zone.last_skipped_reason == "valve_unavailable"
-    assert calls == []
-
-    await scheduler.async_shutdown()
+    hass.states.async_set("binary_sensor.pump", "on")
+    freezer.tick(timedelta(minutes=1))
+    await _fire_tick(hass)
+    assert not sched.no_flow
+    await sched.async_shutdown()
 
 
-# ---------------------------------------------------------------------------
-# Repair issues -- gap 6
-# ---------------------------------------------------------------------------
-async def test_missing_valve_raises_a_repair_issue(
+async def test_no_flow_clears_when_the_zone_stops(hass: HomeAssistant, freezer) -> None:
+    """Stopping the last running zone clears the flag immediately."""
+    freezer.move_to("2026-07-27 06:00:00+00:00")
+    zones = {"z1": _valve_zone("z1")}
+    _wire(hass)
+    hass.states.async_set("valve.z1", "closed")
+    hass.states.async_set("binary_sensor.pump", "off")
+    sched = _make(hass, zones, pump_sensor_id="binary_sensor.pump")
+    await sched.async_start()
+    await sched.async_start_zone("z1")
+    freezer.tick(timedelta(minutes=4))
+    await _fire_tick(hass)
+    assert sched.no_flow
+
+    await sched.async_stop_zone("z1")
+    assert not sched.no_flow
+    await sched.async_shutdown()
+
+
+async def test_no_flow_inert_without_a_pump_sensor(
     hass: HomeAssistant, freezer
 ) -> None:
-    """A zone whose valve entity does not exist raises a repair issue."""
+    """With no pump sensor configured the watchdog never fires."""
     freezer.move_to("2026-07-27 06:00:00+00:00")
-    zone = _zone(valve_entity_id="valve.renamed_away")
+    zones = {"z1": _valve_zone("z1")}
+    _wire(hass)
+    hass.states.async_set("valve.z1", "closed")
+    sched = _make(hass, zones)  # no pump_sensor_id
+    await sched.async_start()
+    await sched.async_start_zone("z1")
+    freezer.tick(timedelta(minutes=10))
+    await _fire_tick(hass)
+    assert not sched.no_flow
+    await sched.async_shutdown()
 
-    scheduler = IrrigationScheduler(hass, HubRuntime(), {"zone1": zone}, None)
-    await scheduler.async_start()
 
-    issue = ir.async_get(hass).async_get_issue(DOMAIN, "valve_missing_zone1")
-    assert issue is not None
-    assert issue.translation_key == "valve_missing"
-
-    await scheduler.async_shutdown()
-
-
-async def test_present_valve_raises_no_repair_issue(
+# --- missing hardware entities (item 6) ------------------------------------
+async def test_missing_zone_entity_raises_and_clears_a_repair_issue(
     hass: HomeAssistant, freezer
 ) -> None:
-    """A zone whose valve exists raises no issue."""
+    """A configured valve that does not exist raises a repair issue."""
     freezer.move_to("2026-07-27 06:00:00+00:00")
-    zone = _zone()
-    hass.states.async_set(VALVE, "closed")
+    zones = {"z1": _valve_zone("z1")}
+    _wire(hass)
+    # valve.z1 is deliberately never given a state.
+    sched = _make(hass, zones)
+    await sched.async_start()
 
-    scheduler = IrrigationScheduler(hass, HubRuntime(), {"zone1": zone}, None)
-    await scheduler.async_start()
+    await _fire_tick(hass)
+    registry = ir.async_get(hass)
+    assert registry.async_get_issue(DOMAIN, "zone_entity_missing_z1") is not None
 
-    assert ir.async_get(hass).async_get_issue(DOMAIN, "valve_missing_zone1") is None
-
-    await scheduler.async_shutdown()
+    # The entity appears -> the issue clears on the next tick.
+    hass.states.async_set("valve.z1", "closed")
+    freezer.tick(timedelta(minutes=1))
+    await _fire_tick(hass)
+    assert registry.async_get_issue(DOMAIN, "zone_entity_missing_z1") is None
+    await sched.async_shutdown()

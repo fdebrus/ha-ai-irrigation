@@ -1,9 +1,4 @@
-"""Setup / teardown tests for the config entry and its zone subentries.
-
-These boot Home Assistant (via pytest-homeassistant-custom-component) and check
-that a hub entry with a single zone subentry loads, creates the expected
-entities on the expected devices, and unloads cleanly.
-"""
+"""Setup / unload of a hub entry with valve, button and distributor zones."""
 
 from __future__ import annotations
 
@@ -15,138 +10,144 @@ from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.irrigation_scheduler.const import (
-    CONF_ADOPT_MANUAL_RUNS,
-    CONF_DEFAULT_DURATION,
-    CONF_DEFAULT_START,
+    CONF_DRIVER,
+    CONF_ORDER,
+    CONF_OUTLET_GAP,
+    CONF_OUTLETS,
+    CONF_SEASONAL,
+    CONF_START_BUTTON,
+    CONF_STOP_BUTTON,
     CONF_VALVE_ENTITY,
-    CONF_WEEKDAYS,
     DOMAIN,
     SUBENTRY_TYPE_ZONE,
 )
+from custom_components.irrigation_scheduler.models import DriverType
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
-# The entities a single zone device owns, by unique-id suffix.
-ZONE_ENTITY_KEYS = {
-    "enabled",  # switch
-    "duration",  # number
-    "start_time",  # time
-    "next_run",  # sensor
-    "finishes_at",  # sensor
-    "status",  # sensor
-    "run_now",  # button
-    "stop",  # button
-    # seven weekday switches
-    "weekday_mon",
-    "weekday_tue",
-    "weekday_wed",
-    "weekday_thu",
-    "weekday_fri",
-    "weekday_sat",
-    "weekday_sun",
+ZONE_KEYS = {
+    "enabled",
+    "second_run",
+    "duration",
+    "schedule",
+    "morning_start",
+    "evening_start",
+    "next_run",
+    "finishes_at",
+    "status",
+    "run_now",
+    "stop",
 }
-# The entities the hub device owns when no weather entity is configured.
-HUB_ENTITY_KEYS = {
-    "master",  # switch
-    "rain_skip",  # switch
-    "sequential",  # switch
-    "rain_threshold",  # number
-    "rain_mm_threshold",  # number
-    "stop_all",  # button
+HUB_KEYS = {
+    "master",
+    "rain_skip",
+    "ai",
+    "rain_threshold",
+    "morning_base",
+    "evening_base",
+    "plan_at",
+    "daily_plan",
+    "stop_all",
+    "plan_now",
+    "overlap",
+    "no_flow",
 }
 
 
-def _make_entry() -> MockConfigEntry:
-    """Build a hub entry with one zone subentry and no weather entity."""
+def _zone(title: str, data: dict) -> ConfigSubentryData:
+    return ConfigSubentryData(
+        subentry_type=SUBENTRY_TYPE_ZONE, title=title, unique_id=None, data=data
+    )
+
+
+def _entry() -> MockConfigEntry:
     return MockConfigEntry(
         domain=DOMAIN,
         title="Irrigation Scheduler",
-        data={},
+        data={},  # no weather entity -> no coordinator
         subentries_data=[
-            ConfigSubentryData(
-                subentry_type=SUBENTRY_TYPE_ZONE,
-                title="Framboisier",
-                unique_id=None,
-                data={
-                    CONF_VALVE_ENTITY: "valve.framboisier",
-                    CONF_DEFAULT_START: "06:00:00",
-                    CONF_DEFAULT_DURATION: 15,
-                    CONF_WEEKDAYS: ["mon", "wed", "fri"],
-                    CONF_ADOPT_MANUAL_RUNS: False,
+            _zone(
+                "Parking",
+                {
+                    CONF_DRIVER: DriverType.VALVE.value,
+                    CONF_VALVE_ENTITY: "valve.p",
+                    CONF_ORDER: 3,
                 },
-            )
+            ),
+            _zone(
+                "Jardin",
+                {
+                    CONF_DRIVER: DriverType.DISTRIBUTOR.value,
+                    CONF_VALVE_ENTITY: "valve.j",
+                    CONF_OUTLETS: 3,
+                    CONF_OUTLET_GAP: 10,
+                    CONF_ORDER: 1,
+                },
+            ),
+            _zone(
+                "Gazon",
+                {
+                    CONF_DRIVER: DriverType.BUTTON.value,
+                    CONF_START_BUTTON: "button.g_start",
+                    CONF_STOP_BUTTON: "button.g_stop",
+                    CONF_SEASONAL: True,
+                    CONF_ORDER: 2,
+                },
+            ),
         ],
     )
 
 
-async def _setup(hass: HomeAssistant) -> MockConfigEntry:
-    """Add and set up the entry, returning it once loaded."""
-    entry = _make_entry()
+async def test_setup_creates_all_entities_and_unloads(hass: HomeAssistant) -> None:
+    """The entry loads, builds each device's entities, and unloads cleanly."""
+    entry = _entry()
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    return entry
-
-
-async def test_setup_creates_entities_on_the_right_devices(
-    hass: HomeAssistant,
-) -> None:
-    """One zone subentry loads and lands its entities on the zone device."""
-    entry = await _setup(hass)
     assert entry.state is ConfigEntryState.LOADED
 
-    subentry_id = next(iter(entry.subentries))
     ent_reg = er.async_get(hass)
     dev_reg = dr.async_get(hass)
 
-    # The zone device carries exactly the zone entities.
-    zone_device = dev_reg.async_get_device(identifiers={(DOMAIN, subentry_id)})
-    assert zone_device is not None
-    assert zone_device.name == "Framboisier"
-    zone_entities = er.async_entries_for_device(ent_reg, zone_device.id)
-    zone_keys = {e.unique_id.removeprefix(f"{subentry_id}_") for e in zone_entities}
-    assert zone_keys == ZONE_ENTITY_KEYS
+    # Each zone device carries the 11 zone entities.
+    for subentry_id in entry.subentries:
+        device = dev_reg.async_get_device(identifiers={(DOMAIN, subentry_id)})
+        assert device is not None
+        keys = {
+            e.unique_id.removeprefix(f"{subentry_id}_")
+            for e in er.async_entries_for_device(ent_reg, device.id)
+        }
+        assert keys == ZONE_KEYS
 
-    # The hub device carries the hub entities (no rain sensor without weather).
-    hub_device = dev_reg.async_get_device(identifiers={(DOMAIN, entry.entry_id)})
-    assert hub_device is not None
-    hub_entities = er.async_entries_for_device(ent_reg, hub_device.id)
-    hub_keys = {e.unique_id.removeprefix(f"{entry.entry_id}_") for e in hub_entities}
-    assert hub_keys == HUB_ENTITY_KEYS
+    # The hub device carries its entities (no rain probability without weather).
+    hub = dev_reg.async_get_device(identifiers={(DOMAIN, entry.entry_id)})
+    assert hub is not None
+    hub_keys = {
+        e.unique_id.removeprefix(f"{entry.entry_id}_")
+        for e in er.async_entries_for_device(ent_reg, hub.id)
+    }
+    assert hub_keys == HUB_KEYS
 
-    # Every entity produced a state.
-    for entity in (*zone_entities, *hub_entities):
-        assert hass.states.get(entity.entity_id) is not None
-
-
-async def test_weekday_switch_owns_the_zone_weekdays(
-    hass: HomeAssistant,
-) -> None:
-    """Toggling a weekday switch updates the zone's weekdays list."""
-    entry = await _setup(hass)
-    subentry_id = next(iter(entry.subentries))
-    zone = entry.runtime_data.zones[subentry_id]
-    assert "wed" in zone.weekdays  # seeded from the subentry
-
-    ent_reg = er.async_get(hass)
-    wed = ent_reg.async_get_entity_id("switch", DOMAIN, f"{subentry_id}_weekday_wed")
-    assert wed is not None
-
-    await hass.services.async_call(
-        "switch", "turn_off", {"entity_id": wed}, blocking=True
-    )
-    assert "wed" not in zone.weekdays
-
-    await hass.services.async_call(
-        "switch", "turn_on", {"entity_id": wed}, blocking=True
-    )
-    assert "wed" in zone.weekdays
-
-
-async def test_unload_is_clean(hass: HomeAssistant) -> None:
-    """Unloading tears the entry down without leaving it loaded."""
-    entry = await _setup(hass)
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.NOT_LOADED
+
+
+async def test_start_times_are_derived_and_non_overlapping(
+    hass: HomeAssistant,
+) -> None:
+    """Derived morning starts follow the watering order from the base time."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    zones = entry.runtime_data.zones
+    by_name = {z.spec.name: z for z in zones.values()}
+    # Jardin (order 1) starts at the base; Gazon (order 2) after it.
+    assert by_name["Jardin"].morning_start is not None
+    assert by_name["Gazon"].morning_start > by_name["Jardin"].morning_start
+
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()

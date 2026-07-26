@@ -1,4 +1,9 @@
-"""Time platform for the Irrigation Scheduler."""
+"""
+Time platform: hub morning/evening base times and the AI plan time.
+
+Only the *bases* are editable. Per-zone start times are derived and surfaced as
+sensors (invariant 2), never as time entities.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +13,7 @@ from homeassistant.components.time import TimeEntity
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
-from .entity import IrrigationZoneEntity
+from .entity import IrrigationHubEntity
 
 if TYPE_CHECKING:
     from datetime import time as dt_time
@@ -17,7 +22,13 @@ if TYPE_CHECKING:
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
     from . import IrrigationConfigEntry
-    from .models import ZoneRuntime
+    from .models import HubState
+    from .scheduler import IrrigationScheduler
+
+
+# All entities read shared runtime_data and push via the dispatcher;
+# there is no per-entity I/O to serialise.
+PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(
@@ -25,33 +36,111 @@ async def async_setup_entry(
     entry: IrrigationConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up the start-time entities."""
-    for subentry_id, zone in entry.runtime_data.zones.items():
-        async_add_entities([ZoneStartTime(zone)], config_subentry_id=subentry_id)
+    """Set up the hub time entities."""
+    data = entry.runtime_data
+    async_add_entities(
+        [
+            MorningBaseTime(data.hub, entry.entry_id, data.scheduler),
+            EveningBaseTime(data.hub, entry.entry_id, data.scheduler),
+            PlanAtTime(data.hub, entry.entry_id),
+        ]
+    )
 
 
-class ZoneStartTime(IrrigationZoneEntity, TimeEntity, RestoreEntity):
-    """The local time this zone starts on its scheduled days."""
+class _RestoringBaseTime(IrrigationHubEntity, TimeEntity, RestoreEntity):
+    """A hub base time that recomputes the sequence when changed."""
 
-    _attr_icon = "mdi:clock-start"
-
-    def __init__(self, zone: ZoneRuntime) -> None:
+    def __init__(
+        self, hub: HubState, entry_id: str, key: str, scheduler: IrrigationScheduler
+    ) -> None:
         """Initialise."""
-        IrrigationZoneEntity.__init__(self, zone, "start_time")
+        IrrigationHubEntity.__init__(self, hub, entry_id, key)
+        self._scheduler = scheduler
 
     async def async_added_to_hass(self) -> None:
-        """Restore the previous start time."""
+        """Restore the previous base time."""
         await super().async_added_to_hass()
         last = await self.async_get_last_state()
         if last is not None and (restored := dt_util.parse_time(last.state)):
-            self.zone.start_time = restored
+            self._set(restored)
+            self._scheduler.recompute_start_times()
+
+    def _get(self) -> dt_time:
+        raise NotImplementedError
+
+    def _set(self, value: dt_time) -> None:
+        raise NotImplementedError
 
     @property
     def native_value(self) -> dt_time:
-        """Return the start time."""
-        return self.zone.start_time
+        """Return the base time."""
+        return self._get()
 
     async def async_set_value(self, value: dt_time) -> None:
-        """Set a new start time."""
-        self.zone.start_time = value
+        """Set a new base time and re-derive the sequence."""
+        self._set(value)
+        self._scheduler.recompute_start_times()
+        self.async_write_ha_state()
+
+
+class MorningBaseTime(_RestoringBaseTime):
+    """When the morning sequence starts."""
+
+    _attr_icon = "mdi:weather-sunset-up"
+
+    def __init__(
+        self, hub: HubState, entry_id: str, scheduler: IrrigationScheduler
+    ) -> None:
+        """Initialise."""
+        super().__init__(hub, entry_id, "morning_base", scheduler)
+
+    def _get(self) -> dt_time:
+        return self.hub.morning_base
+
+    def _set(self, value: dt_time) -> None:
+        self.hub.morning_base = value
+
+
+class EveningBaseTime(_RestoringBaseTime):
+    """When the evening sequence starts."""
+
+    _attr_icon = "mdi:weather-sunset-down"
+
+    def __init__(
+        self, hub: HubState, entry_id: str, scheduler: IrrigationScheduler
+    ) -> None:
+        """Initialise."""
+        super().__init__(hub, entry_id, "evening_base", scheduler)
+
+    def _get(self) -> dt_time:
+        return self.hub.evening_base
+
+    def _set(self, value: dt_time) -> None:
+        self.hub.evening_base = value
+
+
+class PlanAtTime(IrrigationHubEntity, TimeEntity, RestoreEntity):
+    """When the nightly AI plan runs."""
+
+    _attr_icon = "mdi:clock-outline"
+
+    def __init__(self, hub: HubState, entry_id: str) -> None:
+        """Initialise."""
+        IrrigationHubEntity.__init__(self, hub, entry_id, "plan_at")
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the previous plan time."""
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        if last is not None and (restored := dt_util.parse_time(last.state)):
+            self.hub.plan_at = restored
+
+    @property
+    def native_value(self) -> dt_time:
+        """Return the plan time."""
+        return self.hub.plan_at
+
+    async def async_set_value(self, value: dt_time) -> None:
+        """Set a new plan time."""
+        self.hub.plan_at = value
         self.async_write_ha_state()

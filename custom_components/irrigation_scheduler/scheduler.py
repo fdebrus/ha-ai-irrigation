@@ -1,29 +1,20 @@
-"""Scheduling engine for the Irrigation Scheduler."""
+"""
+Scheduling engine: the tick, run/stop, persistence and adoption.
+
+The decisions are pure (models.slot_due / should_skip_for_rain, planner
+sequencing); this module is the thin I/O shell that fires them, drives the
+hardware through drivers, and survives a restart. One pump feeds every zone, so
+only one run is ever live at a time.
+"""
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from homeassistant.const import (
-    ATTR_ENTITY_ID,
-    SERVICE_TURN_OFF,
-    SERVICE_TURN_ON,
-    STATE_OFF,
-    STATE_ON,
-    STATE_OPEN,
-    STATE_OPENING,
-    STATE_UNAVAILABLE,
-)
-from homeassistant.core import (
-    CALLBACK_TYPE,
-    Event,
-    EventStateChangedData,
-    HomeAssistant,
-    callback,
-)
-from homeassistant.helpers import entity_registry as er
+from homeassistant.const import STATE_CLOSED, STATE_OFF, STATE_ON
+from homeassistant.core import callback
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import (
@@ -36,6 +27,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     DOMAIN,
+    NO_FLOW_GRACE_MINUTES,
     SIGNAL_ZONE_UPDATED,
     SOURCE_ADOPTED,
     SOURCE_MANUAL,
@@ -43,91 +35,137 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
 )
-from .models import HubRuntime, ZoneRuntime, should_start
+from .drivers import VALVE_OPEN_STATES
+from .models import (
+    DriverType,
+    should_skip_for_rain,
+    slot_due,
+)
+from .planner import apply_start_times
 
 if TYPE_CHECKING:
     from asyncio import TimerHandle
+    from datetime import datetime
+
+    from homeassistant.core import (
+        CALLBACK_TYPE,
+        Event,
+        EventStateChangedData,
+        HomeAssistant,
+    )
 
     from .coordinator import RainCoordinator
+    from .drivers import Driver
+    from .models import HubState, ZoneState
 
 _LOGGER = logging.getLogger(__name__)
 
-VALVE_OPEN_STATES = {STATE_ON, STATE_OPEN, STATE_OPENING}
-
+# States that mean "not open" for the adoption close-detection branch.
+_CLOSED_STATES: frozenset[str] = frozenset({STATE_OFF, STATE_CLOSED})
+# Weather conditions that count as raining right now.
+_RAINING_STATES: frozenset[str] = frozenset({"rainy", "pouring"})
 # Seconds to keep ignoring our own valve command echoing back as a state event.
 _SELF_DRIVEN_TTL = 5
+# Repair issue id for the pump running dry under an open zone.
+_NO_FLOW_ISSUE = "pump_no_flow"
+# Repair issue id prefix for a zone whose configured hardware entity is gone.
+_MISSING_ENTITY_ISSUE = "zone_entity_missing"
 
 
 class IrrigationScheduler:
-    """Owns the tick, the valve calls and the persisted run state."""
+    """Owns the minute tick, the run/stop path, the Store and adoption."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the scheduler collects the hub's collaborators
         self,
         hass: HomeAssistant,
-        hub: HubRuntime,
-        zones: dict[str, ZoneRuntime],
+        hub: HubState,
+        zones: dict[str, ZoneState],
         coordinator: RainCoordinator | None,
+        *,
+        weather_entity_id: str | None = None,
+        pump_sensor_id: str | None = None,
     ) -> None:
-        """Initialise the scheduler."""
+        """Initialise; drivers are attached with :meth:`set_drivers`."""
         self.hass = hass
         self.hub = hub
         self.zones = zones
         self.coordinator = coordinator
+        self._weather_entity_id = weather_entity_id
+        self._pump_sensor_id = pump_sensor_id
+        self.drivers: dict[str, Driver] = {}
         self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._unsub_tick: CALLBACK_TYPE | None = None
         self._unsub_watch: CALLBACK_TYPE | None = None
         self._unsub_stop: dict[str, CALLBACK_TYPE] = {}
-        # Valve entity IDs we are mid-command on, so our own service calls do
-        # not come back through the state listener and get adopted.
         self._self_driven: set[str] = set()
-        # Timers that clear _self_driven entries, kept so we can cancel them on
-        # shutdown instead of leaking a pending callback.
-        self._self_driven_timers: dict[str, TimerHandle] = {}
-        # Zones waiting their turn in sequential mode: (zone_id, duration, source).
-        self._queue: list[tuple[str, int | None, str]] = []
+        self._self_driven_timers: dict[str, TimerHandle | None] = {}
+        # Set by the pump watchdog; read by the no-flow binary sensor.
+        self.no_flow = False
+        # Zone ids currently flagged with a missing-entity repair issue.
+        self._missing_entities: set[str] = set()
+
+    def set_drivers(self, drivers: dict[str, Driver]) -> None:
+        """Attach the per-zone drivers."""
+        self.drivers = drivers
+
+    @callback
+    def recompute_start_times(self) -> None:
+        """
+        Re-derive every zone's start times and refresh entities.
+
+        Call after any change to a duration, an enabled flag or a base time
+        (invariant 2) so the sequence never lets two zones share the pump.
+        """
+        apply_start_times(list(self.zones.values()), self.hub)
+        self._notify()
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
     async def async_start(self) -> None:
-        """Restore any in-flight runs and arm the tick."""
+        """Restore in-flight runs and arm the tick and adoption listener."""
         await self._async_restore_runs()
-        self._check_valve_entities()
-
         self._unsub_tick = async_track_time_change(
             self.hass, self._async_tick, second=0
         )
-        watched = [z.valve_entity_id for z in self.zones.values() if z.valve_entity_id]
+        # Only valve/distributor zones have a valve to watch; button zones have
+        # no state, so the adoption listener skips them entirely.
+        watched = [
+            entity_id
+            for zone_id, zone in self.zones.items()
+            if (entity_id := self._watched_entity(zone_id))
+            and zone.spec.driver is not DriverType.BUTTON
+        ]
         if watched:
             self._unsub_watch = async_track_state_change_event(
                 self.hass, watched, self._async_valve_changed
             )
 
     async def async_shutdown(self) -> None:
-        """Tear down listeners. Does *not* close valves."""
+        """Tear down listeners and timers. Does not close valves."""
         for unsub in (self._unsub_tick, self._unsub_watch):
             if unsub is not None:
                 unsub()
-        self._unsub_tick = None
-        self._unsub_watch = None
+        self._unsub_tick = self._unsub_watch = None
         for unsub in self._unsub_stop.values():
             unsub()
         self._unsub_stop.clear()
         for timer in self._self_driven_timers.values():
-            timer.cancel()
+            if timer is not None:
+                timer.cancel()
         self._self_driven_timers.clear()
         self._self_driven.clear()
 
+    def _watched_entity(self, zone_id: str) -> str | None:
+        """Entity id whose state should be watched for this zone, if any."""
+        driver = self.drivers.get(zone_id)
+        return driver.watched_entity if driver is not None else None
+
     # ------------------------------------------------------------------
-    # Persistence
+    # Persistence + restart recovery (invariant 3)
     # ------------------------------------------------------------------
     async def _async_restore_runs(self) -> None:
-        """
-        Re-arm or close out runs that were live when HA went down.
-
-        This is the whole reason the integration exists rather than the YAML
-        package: without it, a restart mid-run leaves a valve open forever.
-        """
+        """Re-arm or close out runs that were live when HA went down."""
         stored = await self._store.async_load() or {}
         now = dt_util.utcnow()
         for zone_id, payload in (stored.get("runs") or {}).items():
@@ -138,20 +176,17 @@ class IrrigationScheduler:
             if ends_at is None:
                 continue
             zone.running_source = payload.get("source")
+            zone.running_until = ends_at
             if ends_at <= now:
-                _LOGGER.info(
-                    "Zone %s run expired while HA was down; closing valve", zone.name
-                )
-                zone.running_until = ends_at
+                _LOGGER.info("Zone %s run expired while down; stopping", zone.spec.name)
                 await self.async_stop_zone(zone_id)
             else:
-                _LOGGER.info("Resuming zone %s, %s remaining", zone.name, ends_at - now)
-                zone.running_until = ends_at
+                _LOGGER.info("Resuming zone %s until %s", zone.spec.name, ends_at)
                 self._arm_stop(zone_id, ends_at)
         self._notify()
 
     async def _async_save(self) -> None:
-        """Write live runs to disk."""
+        """Persist live runs to disk."""
         runs = {
             zone_id: {
                 "ends_at": zone.running_until.isoformat(),
@@ -167,26 +202,134 @@ class IrrigationScheduler:
     # ------------------------------------------------------------------
     @callback
     def _async_tick(self, now: datetime) -> None:
-        """Fire once a minute at :00 and evaluate every zone."""
+        """Fire once a minute and start any zone whose slot is due."""
         local_now = dt_util.as_local(now)
         rain = self.coordinator.data if self.coordinator else None
-        probability = rain.probability if rain else None
-        precipitation_mm = rain.precipitation_mm if rain else None
+        raining = self._raining_now()
+        self._evaluate_no_flow()
+        self._check_missing_entities()
         for zone_id, zone in self.zones.items():
-            start, reason = should_start(
-                zone, self.hub, local_now, probability, precipitation_mm
-            )
-            if reason is not None:
-                zone.last_skipped_reason = reason
-            if not start:
+            if not self.hub.master_enabled:
+                zone.last_skipped_reason = "master_off"
                 continue
-            zone.last_scheduled_date = local_now.date().isoformat()
+            slot = slot_due(zone, local_now)
+            if slot is None or zone.is_running:
+                continue
+            slot_key = f"{local_now.date().isoformat()}/{slot}"
+            if zone.last_scheduled_slot == slot_key:
+                continue
+            zone.last_scheduled_slot = slot_key
+            if should_skip_for_rain(self.hub, rain, raining_now=raining):
+                zone.last_skipped_reason = "rain_expected"
+                self._notify()
+                continue
             self.hass.async_create_task(
                 self.async_start_zone(zone_id, source=SOURCE_SCHEDULE)
             )
 
+    def _raining_now(self) -> bool:
+        """Whether the weather entity currently reports rain."""
+        if not self._weather_entity_id:
+            return False
+        state = self.hass.states.get(self._weather_entity_id)
+        return state is not None and state.state in _RAINING_STATES
+
     # ------------------------------------------------------------------
-    # Run control
+    # Pump watchdog
+    # ------------------------------------------------------------------
+    @callback
+    def _evaluate_no_flow(self) -> None:
+        """
+        Flag a dry pump: a zone open past the grace window with the pump off.
+
+        Membership is by the tracked run, so a button zone (Gazon), which has no
+        valve to watch, still counts as "running" while its timer is live. With
+        no pump sensor configured the watchdog is inert.
+        """
+        if not self._pump_sensor_id:
+            return
+        running = [zone for zone in self.zones.values() if zone.is_running]
+        if not running:
+            self._set_no_flow(state=False)
+            return
+        pump = self.hass.states.get(self._pump_sensor_id)
+        if pump is not None and pump.state == STATE_ON:
+            self._set_no_flow(state=False)
+            return
+        now = dt_util.utcnow()
+        grace = timedelta(minutes=NO_FLOW_GRACE_MINUTES)
+        stalled = any(
+            zone.last_run is not None and now - zone.last_run >= grace
+            for zone in running
+        )
+        self._set_no_flow(state=stalled)
+
+    @callback
+    def _set_no_flow(self, *, state: bool) -> None:
+        """Latch the no-flow flag and raise/clear the matching repair issue."""
+        if state == self.no_flow:
+            return
+        self.no_flow = state
+        if state:
+            _LOGGER.warning(
+                "Pump reports no flow while a zone is running (sensor %s)",
+                self._pump_sensor_id,
+            )
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                _NO_FLOW_ISSUE,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=_NO_FLOW_ISSUE,
+                translation_placeholders={"sensor": self._pump_sensor_id or ""},
+            )
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, _NO_FLOW_ISSUE)
+        self._notify()
+
+    # ------------------------------------------------------------------
+    # Missing hardware entities
+    # ------------------------------------------------------------------
+    @callback
+    def _check_missing_entities(self) -> None:
+        """
+        Raise a repair issue for any zone whose configured entity is gone.
+
+        A valve renamed or removed in Home Assistant leaves the service call
+        silently doing nothing, so surface it instead. One issue per zone;
+        cleared when every configured entity for the zone exists again.
+        """
+        for zone_id, zone in self.zones.items():
+            driver = self.drivers.get(zone_id)
+            required = driver.required_entities if driver is not None else []
+            missing = [eid for eid in required if self.hass.states.get(eid) is None]
+            issue_id = f"{_MISSING_ENTITY_ISSUE}_{zone_id}"
+            if missing and zone_id not in self._missing_entities:
+                self._missing_entities.add(zone_id)
+                _LOGGER.warning(
+                    "Zone %s references missing entities: %s",
+                    zone.spec.name,
+                    ", ".join(missing),
+                )
+                ir.async_create_issue(
+                    self.hass,
+                    DOMAIN,
+                    issue_id,
+                    is_fixable=False,
+                    severity=ir.IssueSeverity.ERROR,
+                    translation_key=_MISSING_ENTITY_ISSUE,
+                    translation_placeholders={
+                        "zone": zone.spec.name,
+                        "entity": ", ".join(missing),
+                    },
+                )
+            elif not missing and zone_id in self._missing_entities:
+                self._missing_entities.discard(zone_id)
+                ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+
+    # ------------------------------------------------------------------
+    # Run control -- one pump, one zone at a time (invariant 2)
     # ------------------------------------------------------------------
     async def async_start_zone(
         self,
@@ -194,116 +337,56 @@ class IrrigationScheduler:
         duration_minutes: int | None = None,
         source: str = SOURCE_MANUAL,
     ) -> None:
-        """
-        Open a zone's valve and arm its stop timer.
-
-        In sequential mode, a start that would overlap another running zone is
-        queued instead and runs when that zone stops. Adopted runs bypass the
-        queue -- the valve is already physically open, so there is nothing to
-        defer.
-        """
+        """Start a zone, stopping any other running zone first."""
         zone = self.zones[zone_id]
 
-        if (
-            source != SOURCE_ADOPTED
-            and self.hub.sequential
-            and self._other_zone_running(zone_id)
-        ):
-            self._enqueue(zone_id, duration_minutes, source)
-            return
-
-        # A valve that is unavailable (or gone) swallows the service call
-        # silently, which would leave us tracking a run that never opened. Skip
-        # the run instead, and let the next queued zone try.
-        if source != SOURCE_ADOPTED and not self._valve_available(zone):
-            _LOGGER.warning(
-                "Zone %s valve %s is unavailable; skipping run",
-                zone.name,
-                zone.valve_entity_id,
-            )
-            zone.last_skipped_reason = "valve_unavailable"
-            zone.queued = False
-            self._notify()
-            self._maybe_start_next()
-            return
+        # Enforce the single pump: never let two runs overlap.
+        for other_id, other in self.zones.items():
+            if other_id != zone_id and other.is_running:
+                await self.async_stop_zone(other_id)
 
         minutes = duration_minutes or zone.duration_minutes
-        ends_at = dt_util.utcnow() + timedelta(minutes=minutes)
+        run_minutes = zone.spec.occupancy_minutes(minutes) - zone.spec.settle_minutes
+        ends_at = dt_util.utcnow() + timedelta(minutes=run_minutes)
 
-        # Mark the run live *before* the awaited valve call so a second start
-        # racing in (two zones due on the same tick) sees this zone running and
-        # queues behind it rather than opening alongside it.
+        # Mark the run live before the awaited driver call so the adoption
+        # listener sees it running and never re-adopts our own command.
         zone.running_until = ends_at
         zone.running_source = source
         zone.last_run = dt_util.utcnow()
         zone.last_skipped_reason = None
-        zone.queued = False
 
-        if source != SOURCE_ADOPTED:
-            await self._async_set_valve(zone, open_valve=True)
+        if source != SOURCE_ADOPTED and (driver := self.drivers.get(zone_id)):
+            await driver.async_start()
 
         self._arm_stop(zone_id, ends_at)
         await self._async_save()
         self._notify()
-        _LOGGER.debug("Zone %s started (%s) for %s min", zone.name, source, minutes)
+        _LOGGER.debug(
+            "Zone %s started (%s) for %s min", zone.spec.name, source, run_minutes
+        )
 
     async def async_stop_zone(self, zone_id: str) -> None:
-        """Close a zone's valve and clear its run state."""
+        """Stop a zone and clear its run state."""
         zone = self.zones[zone_id]
         if (unsub := self._unsub_stop.pop(zone_id, None)) is not None:
             unsub()
-        await self._async_set_valve(zone, open_valve=False)
+        if driver := self.drivers.get(zone_id):
+            await driver.async_stop()
         zone.running_until = None
         zone.running_source = None
         await self._async_save()
+        self._evaluate_no_flow()
         self._notify()
-        _LOGGER.debug("Zone %s stopped", zone.name)
-        self._maybe_start_next()
+        _LOGGER.debug("Zone %s stopped", zone.spec.name)
 
     async def async_stop_all(self) -> None:
-        """Close every zone. Wire this to your emergency-stop button."""
-        self._queue.clear()
-        for zone in self.zones.values():
-            zone.queued = False
+        """Stop every zone. The panic button."""
         for zone_id in list(self.zones):
             await self.async_stop_zone(zone_id)
 
-    # ------------------------------------------------------------------
-    # Sequential queue
-    # ------------------------------------------------------------------
-    def _other_zone_running(self, zone_id: str) -> bool:
-        """Return True if a zone other than ``zone_id`` currently has a run."""
-        return any(
-            zone.running_until is not None
-            for zid, zone in self.zones.items()
-            if zid != zone_id
-        )
-
-    def _enqueue(self, zone_id: str, duration: int | None, source: str) -> None:
-        """Queue a zone to run once the plumbing is free."""
-        if any(queued_id == zone_id for queued_id, _, _ in self._queue):
-            return
-        self._queue.append((zone_id, duration, source))
-        zone = self.zones[zone_id]
-        zone.queued = True
-        zone.last_skipped_reason = None
-        self._notify()
-        _LOGGER.debug("Zone %s queued behind a running zone", zone.name)
-
-    def _maybe_start_next(self) -> None:
-        """Start the next queued zone once nothing else is running."""
-        if not self._queue or any(
-            zone.running_until is not None for zone in self.zones.values()
-        ):
-            return
-        zone_id, duration, source = self._queue.pop(0)
-        self.zones[zone_id].queued = False
-        self.hass.async_create_task(
-            self.async_start_zone(zone_id, duration_minutes=duration, source=source)
-        )
-
     def _arm_stop(self, zone_id: str, ends_at: datetime) -> None:
-        """Schedule the close for a running zone."""
+        """Schedule the stop for a running zone."""
         if (unsub := self._unsub_stop.pop(zone_id, None)) is not None:
             unsub()
 
@@ -316,121 +399,56 @@ class IrrigationScheduler:
         )
 
     # ------------------------------------------------------------------
-    # Repair issues
+    # Adoption + self-driven suppression (invariants 1, 5)
     # ------------------------------------------------------------------
-    def _check_valve_entities(self) -> None:
-        """
-        Raise a repair issue for any zone whose valve entity is gone.
-
-        A rename or removal of the user's valve leaves the zone pointing at an
-        entity id that no longer resolves, and the service call would silently
-        do nothing. The registry check tolerates load order: a valve that is
-        merely not loaded yet this boot is still registered.
-        """
-        ent_reg = er.async_get(self.hass)
-        for zone in self.zones.values():
-            issue_id = f"valve_missing_{zone.subentry_id}"
-            exists = bool(zone.valve_entity_id) and (
-                ent_reg.async_get(zone.valve_entity_id) is not None
-                or self.hass.states.get(zone.valve_entity_id) is not None
-            )
-            if exists:
-                ir.async_delete_issue(self.hass, DOMAIN, issue_id)
-            else:
-                ir.async_create_issue(
-                    self.hass,
-                    DOMAIN,
-                    issue_id,
-                    is_fixable=False,
-                    severity=ir.IssueSeverity.WARNING,
-                    translation_key="valve_missing",
-                    translation_placeholders={
-                        "zone": zone.name,
-                        "entity_id": zone.valve_entity_id or "",
-                    },
-                )
-
-    # ------------------------------------------------------------------
-    # Valve I/O
-    # ------------------------------------------------------------------
-    def _valve_available(self, zone: ZoneRuntime) -> bool:
-        """Return True if the zone's valve exists and is not unavailable."""
-        if not zone.valve_entity_id:
-            return False
-        state = self.hass.states.get(zone.valve_entity_id)
-        return state is not None and state.state != STATE_UNAVAILABLE
-
-    async def _async_set_valve(self, zone: ZoneRuntime, *, open_valve: bool) -> None:
-        """Open or close the zone's valve, whatever domain it lives in."""
-        entity_id = zone.valve_entity_id
-        if not entity_id:
-            return
-        domain = entity_id.split(".", 1)[0]
-        if domain == "valve":
-            service = "open_valve" if open_valve else "close_valve"
-        else:
-            # switch, input_boolean, light, ... all take turn_on/turn_off.
-            domain = (
-                domain if domain in ("switch", "input_boolean") else "homeassistant"
-            )
-            service = SERVICE_TURN_ON if open_valve else SERVICE_TURN_OFF
-
+    @callback
+    def mark_self_driven(self, entity_id: str) -> None:
+        """Announce that we are about to command ``entity_id`` ourselves."""
         self._self_driven.add(entity_id)
-        try:
-            await self.hass.services.async_call(
-                domain, service, {ATTR_ENTITY_ID: entity_id}, blocking=True
-            )
-        finally:
-            if (timer := self._self_driven_timers.pop(entity_id, None)) is not None:
-                timer.cancel()
-            self._self_driven_timers[entity_id] = self.hass.loop.call_later(
-                _SELF_DRIVEN_TTL, self._clear_self_driven, entity_id
-            )
+        if (timer := self._self_driven_timers.pop(entity_id, None)) is not None:
+            timer.cancel()
+        self._self_driven_timers[entity_id] = self.hass.loop.call_later(
+            _SELF_DRIVEN_TTL, self._clear_self_driven, entity_id
+        )
+
+    @callback
+    def _clear_self_driven(self, entity_id: str) -> None:
+        self._self_driven.discard(entity_id)
+        self._self_driven_timers.pop(entity_id, None)
 
     @callback
     def _async_valve_changed(self, event: Event[EventStateChangedData]) -> None:
-        """
-        Adopt (or ignore) a valve that was opened outside the integration.
-
-        The old YAML package did this implicitly for every zone, which is what
-        made the HomeKit runs look like they were being closed by the device.
-        Here it is opt-in per zone via `adopt_manual_runs`.
-        """
+        """Adopt (or release) a valve changed outside the integration."""
         entity_id = event.data["entity_id"]
         if entity_id in self._self_driven:
             return
         new_state = event.data["new_state"]
         if new_state is None:
             return
-
         zone_id = next(
-            (zid for zid, z in self.zones.items() if z.valve_entity_id == entity_id),
+            (zid for zid in self.zones if self._watched_entity(zid) == entity_id),
             None,
         )
         if zone_id is None:
             return
         zone = self.zones[zone_id]
+        # Button zones never reach here (not watched), but guard anyway.
+        if zone.spec.driver is DriverType.BUTTON:
+            return
 
         if new_state.state in VALVE_OPEN_STATES:
-            if zone.adopt_manual_runs and not zone.is_running:
+            if zone.spec.adopt_manual_runs and not zone.is_running:
                 self.hass.async_create_task(
                     self.async_start_zone(zone_id, source=SOURCE_ADOPTED)
                 )
-        elif new_state.state in (STATE_OFF, "closed") and zone.is_running:
-            # Someone closed it under us -- drop our timer so we do not send a
-            # redundant close later.
+        elif new_state.state in _CLOSED_STATES and zone.is_running:
+            # Closed under us: drop the run so we do not send a redundant stop.
             if (unsub := self._unsub_stop.pop(zone_id, None)) is not None:
                 unsub()
             zone.running_until = None
             zone.running_source = None
             self.hass.async_create_task(self._async_save())
             self._notify()
-
-    @callback
-    def _clear_self_driven(self, entity_id: str) -> None:
-        """Stop ignoring our own command for an entity once it has settled."""
-        self._self_driven.discard(entity_id)
-        self._self_driven_timers.pop(entity_id, None)
 
     # ------------------------------------------------------------------
     @callback

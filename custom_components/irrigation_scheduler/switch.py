@@ -1,14 +1,13 @@
-"""Switch platform for the Irrigation Scheduler."""
+"""Switch platform: hub master/rain-skip/AI, per-zone enabled/second-run."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.const import STATE_ON, EntityCategory
+from homeassistant.const import STATE_ON
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import WEEKDAY_KEYS
 from .entity import IrrigationHubEntity, IrrigationZoneEntity
 
 if TYPE_CHECKING:
@@ -16,7 +15,13 @@ if TYPE_CHECKING:
     from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
     from . import IrrigationConfigEntry
-    from .models import HubRuntime, ZoneRuntime
+    from .models import HubState, ZoneState
+    from .scheduler import IrrigationScheduler
+
+
+# All entities read shared runtime_data and push via the dispatcher;
+# there is no per-entity I/O to serialise.
+PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(
@@ -30,14 +35,14 @@ async def async_setup_entry(
         [
             MasterSwitch(data.hub, entry.entry_id),
             RainSkipSwitch(data.hub, entry.entry_id),
-            SequentialSwitch(data.hub, entry.entry_id),
+            AiSwitch(data.hub, entry.entry_id),
         ]
     )
     for subentry_id, zone in data.zones.items():
         async_add_entities(
             [
-                ZoneEnabledSwitch(zone),
-                *(ZoneWeekdaySwitch(zone, day) for day in WEEKDAY_KEYS),
+                ZoneEnabledSwitch(zone, data.scheduler),
+                ZoneSecondRunSwitch(zone, data.scheduler),
             ],
             config_subentry_id=subentry_id,
         )
@@ -45,8 +50,6 @@ async def async_setup_entry(
 
 class _RestoringSwitch(SwitchEntity, RestoreEntity):
     """Switch whose value survives restarts."""
-
-    _attr_entity_category = None
 
     async def async_added_to_hass(self) -> None:
         """Restore the previous value."""
@@ -58,12 +61,12 @@ class _RestoringSwitch(SwitchEntity, RestoreEntity):
         raise NotImplementedError
 
     async def async_turn_on(self, **_kwargs: Any) -> None:
-        """Turn the switch on."""
+        """Turn on."""
         self._apply(value=True)
         self.async_write_ha_state()
 
     async def async_turn_off(self, **_kwargs: Any) -> None:
-        """Turn the switch off."""
+        """Turn off."""
         self._apply(value=False)
         self.async_write_ha_state()
 
@@ -73,7 +76,7 @@ class MasterSwitch(IrrigationHubEntity, _RestoringSwitch):
 
     _attr_icon = "mdi:sprinkler-fire"
 
-    def __init__(self, hub: HubRuntime, entry_id: str) -> None:
+    def __init__(self, hub: HubState, entry_id: str) -> None:
         """Initialise."""
         IrrigationHubEntity.__init__(self, hub, entry_id, "master")
 
@@ -87,11 +90,11 @@ class MasterSwitch(IrrigationHubEntity, _RestoringSwitch):
 
 
 class RainSkipSwitch(IrrigationHubEntity, _RestoringSwitch):
-    """Enable skipping runs when rain is forecast."""
+    """Skip scheduled runs when rain is expected."""
 
     _attr_icon = "mdi:weather-rainy"
 
-    def __init__(self, hub: HubRuntime, entry_id: str) -> None:
+    def __init__(self, hub: HubState, entry_id: str) -> None:
         """Initialise."""
         IrrigationHubEntity.__init__(self, hub, entry_id, "rain_skip")
 
@@ -104,22 +107,22 @@ class RainSkipSwitch(IrrigationHubEntity, _RestoringSwitch):
         self.hub.rain_skip_enabled = value
 
 
-class SequentialSwitch(IrrigationHubEntity, _RestoringSwitch):
-    """Run overlapping zones one at a time instead of together."""
+class AiSwitch(IrrigationHubEntity, _RestoringSwitch):
+    """Enable the nightly AI plan."""
 
-    _attr_icon = "mdi:format-list-numbered"
+    _attr_icon = "mdi:robot"
 
-    def __init__(self, hub: HubRuntime, entry_id: str) -> None:
+    def __init__(self, hub: HubState, entry_id: str) -> None:
         """Initialise."""
-        IrrigationHubEntity.__init__(self, hub, entry_id, "sequential")
+        IrrigationHubEntity.__init__(self, hub, entry_id, "ai")
 
     @property
     def is_on(self) -> bool:
-        """Return whether sequential mode is active."""
-        return self.hub.sequential
+        """Return whether the AI plan is enabled."""
+        return self.hub.ai_enabled
 
     def _apply(self, *, value: bool) -> None:
-        self.hub.sequential = value
+        self.hub.ai_enabled = value
 
 
 class ZoneEnabledSwitch(IrrigationZoneEntity, _RestoringSwitch):
@@ -127,9 +130,10 @@ class ZoneEnabledSwitch(IrrigationZoneEntity, _RestoringSwitch):
 
     _attr_icon = "mdi:sprinkler-variant"
 
-    def __init__(self, zone: ZoneRuntime) -> None:
+    def __init__(self, zone: ZoneState, scheduler: IrrigationScheduler) -> None:
         """Initialise."""
         IrrigationZoneEntity.__init__(self, zone, "enabled")
+        self._scheduler = scheduler
 
     @property
     def is_on(self) -> bool:
@@ -138,34 +142,24 @@ class ZoneEnabledSwitch(IrrigationZoneEntity, _RestoringSwitch):
 
     def _apply(self, *, value: bool) -> None:
         self.zone.enabled = value
+        self._scheduler.recompute_start_times()
 
 
-class ZoneWeekdaySwitch(IrrigationZoneEntity, _RestoringSwitch):
-    """
-    Whether the zone runs on one weekday.
+class ZoneSecondRunSwitch(IrrigationZoneEntity, _RestoringSwitch):
+    """Enable a second, evening run for this zone."""
 
-    Seven per zone. The zone's ``weekdays`` list is owned by these switches and
-    restored across restarts; the subentry only seeds the initial values.
-    """
+    _attr_icon = "mdi:repeat"
 
-    _attr_entity_category = EntityCategory.CONFIG
-    _attr_icon = "mdi:calendar-check"
-
-    def __init__(self, zone: ZoneRuntime, day: str) -> None:
-        """Initialise for a single weekday key (mon..sun)."""
-        IrrigationZoneEntity.__init__(self, zone, f"weekday_{day}")
-        self._day = day
+    def __init__(self, zone: ZoneState, scheduler: IrrigationScheduler) -> None:
+        """Initialise."""
+        IrrigationZoneEntity.__init__(self, zone, "second_run")
+        self._scheduler = scheduler
 
     @property
     def is_on(self) -> bool:
-        """Return whether the zone runs on this weekday."""
-        return self._day in self.zone.weekdays
+        """Return whether the second run is enabled."""
+        return self.zone.second_run
 
     def _apply(self, *, value: bool) -> None:
-        present = set(self.zone.weekdays)
-        if value:
-            present.add(self._day)
-        else:
-            present.discard(self._day)
-        # Keep the list in calendar order so the status attributes read nicely.
-        self.zone.weekdays = [day for day in WEEKDAY_KEYS if day in present]
+        self.zone.second_run = value
+        self._scheduler.recompute_start_times()
