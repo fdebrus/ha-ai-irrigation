@@ -11,12 +11,15 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
+
 from custom_components.irrigation_scheduler import ai as ai_module
 from custom_components.irrigation_scheduler.ai import (
     IrrigationAI,
     build_response_format,
     parse_plan,
 )
+from custom_components.irrigation_scheduler.const import SIGNAL_ZONE_UPDATED
 from custom_components.irrigation_scheduler.models import (
     DriverType,
     HubState,
@@ -267,6 +270,72 @@ async def test_generate_plan_applies_a_fenced_text_reply(hass: HomeAssistant):
     assert zones["z1"].duration_minutes == 22
     assert hub.rain_threshold == 70
     assert hub.last_plan_failed is False
+
+
+# --- scheduling: manual plans must not suppress the nightly run -------------
+async def test_scheduled_plan_fires_even_after_a_manual_plan_today(
+    hass: HomeAssistant,
+):
+    zones = _garden()
+    ai, hub = _make_ai(hass, zones)
+    hub.last_plan_date = ai_module.dt_util.now().date()  # manual plan earlier today
+    calls: list = []
+
+    async def _reply(_call) -> dict:
+        calls.append(1)
+        return {"data": '{"narrative": "soir"}'}
+
+    hass.services.async_register(
+        "ai_task", "generate_data", _reply, supports_response="only"
+    )
+    at = ai_module.dt_util.now().replace(
+        hour=hub.plan_at.hour, minute=hub.plan_at.minute
+    )
+    ai._async_minute(at)
+    await hass.async_block_till_done()
+    assert calls, "the 22:30 run was suppressed by an earlier manual plan"
+
+
+async def test_startup_restore_notifies_entities(hass: HomeAssistant):
+    """Restored plan state is pushed to entities, not left on unknown."""
+    zones = _garden()
+    ai, hub = _make_ai(hass, zones)
+    await ai._store.async_save(
+        {"date": "2026-07-26", "narrative": "hier", "failed": False, "rejections": []}
+    )
+    notified: list = []
+    unsub = async_dispatcher_connect(
+        hass, SIGNAL_ZONE_UPDATED, lambda: notified.append(1)
+    )
+    await ai.async_start()
+    await hass.async_block_till_done()
+    assert hub.last_plan_narrative == "hier"
+    assert str(hub.last_plan_date) == "2026-07-26"
+    assert notified, "entities were not told about the restored plan"
+    unsub()
+    ai.async_shutdown()
+
+
+async def test_startup_catch_up_skipped_when_plan_exists_today(hass: HomeAssistant):
+    """Catch-up (unlike the scheduled run) still respects one-per-day."""
+    zones = _garden()
+    ai, hub = _make_ai(hass, zones)
+    now = ai_module.dt_util.now()
+    hub.last_plan_date = now.date()
+    hub.plan_at = now.replace(hour=0, minute=0).time()  # plan time already passed
+    calls: list = []
+
+    async def _reply(_call) -> dict:
+        calls.append(1)
+        return {"data": '{"narrative": "x"}'}
+
+    hass.services.async_register(
+        "ai_task", "generate_data", _reply, supports_response="only"
+    )
+    await ai.async_start()
+    await hass.async_block_till_done()
+    assert not calls  # today's plan already exists; no catch-up
+    ai.async_shutdown()
 
 
 # --- the failure path: ai_task raising keeps yesterday's plan --------------
