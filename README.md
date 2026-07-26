@@ -2,7 +2,7 @@
   <img src="brand/icon.png" alt="Irrigation AI Scheduler" width="96" height="96">
 </p>
 
-<h1 align="center">Irrigation Scheduler</h1>
+<h1 align="center">Irrigation AI Scheduler</h1>
 
 <p align="center">
   A Home Assistant integration that sequences a shared-pump irrigation system and
