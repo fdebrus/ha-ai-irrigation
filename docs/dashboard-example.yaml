@@ -5,7 +5,7 @@
 #  Entity mapping applied throughout:
 #    input_boolean.irrigation_master        -> switch.irrigation_master
 #    input_boolean.irrigation_rain_skip     -> switch.irrigation_rain_skip
-#    input_boolean.irrigation_ai_enabled    -> switch.irrigation_ai
+#    input_boolean.irrigation_ai_enabled    -> switch.irrigation_ai_plan
 #    input_number.irrigation_rain_threshold -> number.irrigation_rain_threshold
 #    binary_sensor.irrigation_schedule_overlap -> binary_sensor.irrigation_overlap
 #    input_text.irrigation_ai_last_summary  -> state_attr('sensor.irrigation_daily_plan','narrative')
@@ -117,11 +117,11 @@ views:
           - type: horizontal-stack
             cards:
               - type: custom:mushroom-entity-card
-                entity: switch.irrigation_ai
+                entity: switch.irrigation_ai_plan
                 name: AI plan
                 icon: mdi:robot
                 icon_color: >-
-                  {{ 'purple' if is_state('switch.irrigation_ai', 'on') else
+                  {{ 'purple' if is_state('switch.irrigation_ai_plan', 'on') else
                   'disabled' }}
                 tap_action:
                   action: toggle
@@ -146,7 +146,7 @@ views:
                 name: Pompe RMQ
           - type: conditional
             conditions:
-              - entity: switch.irrigation_ai
+              - entity: switch.irrigation_ai_plan
                 state: "on"
             card:
               type: custom:mushroom-template-card
@@ -174,7 +174,7 @@ views:
               columns: full
           - type: conditional
             conditions:
-              - entity: switch.irrigation_ai
+              - entity: switch.irrigation_ai_plan
                 state: "on"
             card:
               type: custom:mushroom-template-card
