@@ -43,6 +43,8 @@ class ZoneRuntime:
     last_run: datetime | None = None
     last_skipped_reason: str | None = None
     last_scheduled_date: str | None = None
+    # Waiting behind another zone in sequential mode.
+    queued: bool = False
 
     @property
     def is_running(self) -> bool:
@@ -80,6 +82,8 @@ class HubRuntime:
     master_enabled: bool = True
     rain_skip_enabled: bool = True
     rain_threshold: int = DEFAULT_RAIN_THRESHOLD
+    # Run overlapping zones one at a time instead of together.
+    sequential: bool = False
 
 
 def should_start(  # noqa: PLR0911 - guard clauses are the design; see CLAUDE.md invariant 6

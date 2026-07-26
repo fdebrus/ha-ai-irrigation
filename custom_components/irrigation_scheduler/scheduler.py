@@ -71,6 +71,8 @@ class IrrigationScheduler:
         # Valve entity IDs we are mid-command on, so our own service calls do
         # not come back through the state listener and get adopted.
         self._self_driven: set[str] = set()
+        # Zones waiting their turn in sequential mode: (zone_id, duration, source).
+        self._queue: list[tuple[str, int | None, str]] = []
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -171,18 +173,39 @@ class IrrigationScheduler:
         duration_minutes: int | None = None,
         source: str = SOURCE_MANUAL,
     ) -> None:
-        """Open a zone's valve and arm its stop timer."""
+        """
+        Open a zone's valve and arm its stop timer.
+
+        In sequential mode, a start that would overlap another running zone is
+        queued instead and runs when that zone stops. Adopted runs bypass the
+        queue -- the valve is already physically open, so there is nothing to
+        defer.
+        """
         zone = self.zones[zone_id]
+
+        if (
+            source != SOURCE_ADOPTED
+            and self.hub.sequential
+            and self._other_zone_running(zone_id)
+        ):
+            self._enqueue(zone_id, duration_minutes, source)
+            return
+
         minutes = duration_minutes or zone.duration_minutes
         ends_at = dt_util.utcnow() + timedelta(minutes=minutes)
 
-        if source != SOURCE_ADOPTED:
-            await self._async_set_valve(zone, open_valve=True)
-
+        # Mark the run live *before* the awaited valve call so a second start
+        # racing in (two zones due on the same tick) sees this zone running and
+        # queues behind it rather than opening alongside it.
         zone.running_until = ends_at
         zone.running_source = source
         zone.last_run = dt_util.utcnow()
         zone.last_skipped_reason = None
+        zone.queued = False
+
+        if source != SOURCE_ADOPTED:
+            await self._async_set_valve(zone, open_valve=True)
+
         self._arm_stop(zone_id, ends_at)
         await self._async_save()
         self._notify()
@@ -199,11 +222,49 @@ class IrrigationScheduler:
         await self._async_save()
         self._notify()
         _LOGGER.debug("Zone %s stopped", zone.name)
+        self._maybe_start_next()
 
     async def async_stop_all(self) -> None:
         """Close every zone. Wire this to your emergency-stop button."""
+        self._queue.clear()
+        for zone in self.zones.values():
+            zone.queued = False
         for zone_id in list(self.zones):
             await self.async_stop_zone(zone_id)
+
+    # ------------------------------------------------------------------
+    # Sequential queue
+    # ------------------------------------------------------------------
+    def _other_zone_running(self, zone_id: str) -> bool:
+        """Return True if a zone other than ``zone_id`` currently has a run."""
+        return any(
+            zone.running_until is not None
+            for zid, zone in self.zones.items()
+            if zid != zone_id
+        )
+
+    def _enqueue(self, zone_id: str, duration: int | None, source: str) -> None:
+        """Queue a zone to run once the plumbing is free."""
+        if any(queued_id == zone_id for queued_id, _, _ in self._queue):
+            return
+        self._queue.append((zone_id, duration, source))
+        zone = self.zones[zone_id]
+        zone.queued = True
+        zone.last_skipped_reason = None
+        self._notify()
+        _LOGGER.debug("Zone %s queued behind a running zone", zone.name)
+
+    def _maybe_start_next(self) -> None:
+        """Start the next queued zone once nothing else is running."""
+        if not self._queue or any(
+            zone.running_until is not None for zone in self.zones.values()
+        ):
+            return
+        zone_id, duration, source = self._queue.pop(0)
+        self.zones[zone_id].queued = False
+        self.hass.async_create_task(
+            self.async_start_zone(zone_id, duration_minutes=duration, source=source)
+        )
 
     def _arm_stop(self, zone_id: str, ends_at: datetime) -> None:
         """Schedule the close for a running zone."""

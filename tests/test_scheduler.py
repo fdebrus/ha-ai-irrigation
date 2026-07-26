@@ -235,3 +235,100 @@ async def test_stopping_a_zone_cancels_its_pending_stop_timer(
     assert calls.count(("close", VALVE)) == closes
 
     await scheduler.async_shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Sequential mode -- gap 2
+# ---------------------------------------------------------------------------
+def _two_zones() -> dict[str, ZoneRuntime]:
+    """Two zones on separate valves."""
+    return {
+        "zone1": _zone(subentry_id="zone1", valve_entity_id="valve.z1"),
+        "zone2": _zone(subentry_id="zone2", valve_entity_id="valve.z2"),
+    }
+
+
+async def test_sequential_mode_queues_an_overlapping_start(
+    hass: HomeAssistant, freezer
+) -> None:
+    """With sequential on, a second start queues and runs when the first stops."""
+    freezer.move_to("2026-07-27 06:00:00+00:00")
+    zones = _two_zones()
+    calls = _wire_valve(hass)
+    hass.states.async_set("valve.z1", "closed")
+    hass.states.async_set("valve.z2", "closed")
+
+    scheduler = IrrigationScheduler(hass, HubRuntime(sequential=True), zones, None)
+    await scheduler.async_start()
+
+    await scheduler.async_start_zone("zone1", source=SOURCE_MANUAL)
+    assert zones["zone1"].is_running
+
+    await scheduler.async_start_zone("zone2", source=SOURCE_MANUAL)
+    await hass.async_block_till_done()
+    # zone2 waits its turn; its valve is not opened yet.
+    assert not zones["zone2"].is_running
+    assert zones["zone2"].queued
+    assert ("open", "valve.z2") not in calls
+
+    # zone1 finishing releases zone2.
+    await scheduler.async_stop_zone("zone1")
+    await hass.async_block_till_done()
+    assert zones["zone2"].is_running
+    assert not zones["zone2"].queued
+    assert ("open", "valve.z2") in calls
+
+    await scheduler.async_shutdown()
+
+
+async def test_non_sequential_mode_allows_zones_to_overlap(
+    hass: HomeAssistant, freezer
+) -> None:
+    """With sequential off, overlapping starts both run."""
+    freezer.move_to("2026-07-27 06:00:00+00:00")
+    zones = _two_zones()
+    _wire_valve(hass)
+    hass.states.async_set("valve.z1", "closed")
+    hass.states.async_set("valve.z2", "closed")
+
+    scheduler = IrrigationScheduler(hass, HubRuntime(sequential=False), zones, None)
+    await scheduler.async_start()
+
+    await scheduler.async_start_zone("zone1", source=SOURCE_MANUAL)
+    await scheduler.async_start_zone("zone2", source=SOURCE_MANUAL)
+    await hass.async_block_till_done()
+
+    assert zones["zone1"].is_running
+    assert zones["zone2"].is_running
+    assert not zones["zone2"].queued
+
+    await scheduler.async_shutdown()
+
+
+async def test_adopted_run_bypasses_the_sequential_queue(
+    hass: HomeAssistant, freezer
+) -> None:
+    """An externally opened valve is adopted at once, never queued.
+
+    The valve is already physically open, so deferring it would leave it
+    running untracked -- adoption must take effect immediately even mid-run.
+    """
+    freezer.move_to("2026-07-27 06:00:00+00:00")
+    zones = _two_zones()
+    zones["zone2"].adopt_manual_runs = True
+    _wire_valve(hass)
+    hass.states.async_set("valve.z1", "closed")
+    hass.states.async_set("valve.z2", "closed")
+
+    scheduler = IrrigationScheduler(hass, HubRuntime(sequential=True), zones, None)
+    await scheduler.async_start()
+
+    await scheduler.async_start_zone("zone1", source=SOURCE_MANUAL)
+    hass.states.async_set("valve.z2", "open")  # opened by hand, mid zone1 run
+    await hass.async_block_till_done()
+
+    assert zones["zone2"].is_running
+    assert zones["zone2"].running_source == SOURCE_ADOPTED
+    assert not zones["zone2"].queued
+
+    await scheduler.async_shutdown()

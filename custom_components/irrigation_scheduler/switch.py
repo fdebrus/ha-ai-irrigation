@@ -29,6 +29,7 @@ async def async_setup_entry(
         [
             MasterSwitch(data.hub, entry.entry_id),
             RainSkipSwitch(data.hub, entry.entry_id),
+            SequentialSwitch(data.hub, entry.entry_id),
         ]
     )
     for subentry_id, zone in data.zones.items():
@@ -94,6 +95,24 @@ class RainSkipSwitch(IrrigationHubEntity, _RestoringSwitch):
 
     def _apply(self, *, value: bool) -> None:
         self.hub.rain_skip_enabled = value
+
+
+class SequentialSwitch(IrrigationHubEntity, _RestoringSwitch):
+    """Run overlapping zones one at a time instead of together."""
+
+    _attr_icon = "mdi:format-list-numbered"
+
+    def __init__(self, hub: HubRuntime, entry_id: str) -> None:
+        """Initialise."""
+        IrrigationHubEntity.__init__(self, hub, entry_id, "sequential")
+
+    @property
+    def is_on(self) -> bool:
+        """Return whether sequential mode is active."""
+        return self.hub.sequential
+
+    def _apply(self, *, value: bool) -> None:
+        self.hub.sequential = value
 
 
 class ZoneEnabledSwitch(IrrigationZoneEntity, _RestoringSwitch):

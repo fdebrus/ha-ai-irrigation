@@ -94,6 +94,8 @@ class ZoneStatusSensor(IrrigationZoneEntity, SensorEntity):
         """Return running / idle, plus why the last run was skipped."""
         if self.zone.is_running:
             return f"running ({self.zone.running_source})"
+        if self.zone.queued:
+            return "queued"
         if self.zone.last_skipped_reason:
             return self.zone.last_skipped_reason
         return "idle"

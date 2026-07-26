@@ -76,6 +76,7 @@
     "switch": {
       "master": { "name": "Master" },
       "rain_skip": { "name": "Rain skip" },
+      "sequential": { "name": "Run zones sequentially" },
       "enabled": { "name": "Enabled" }
     },
     "number": {

@@ -42,6 +42,7 @@ ZONE_ENTITY_KEYS = {
 HUB_ENTITY_KEYS = {
     "master",  # switch
     "rain_skip",  # switch
+    "sequential",  # switch
     "rain_threshold",  # number
     "stop_all",  # button
 }

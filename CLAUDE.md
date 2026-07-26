@@ -123,9 +123,12 @@ Known gaps — pick these up in roughly this order:
    covers setup/unload; `tests/test_scheduler.py` covers restart recovery (both
    branches), the adoption listener with `adopt_manual_runs` on and off, the
    self-driven suppression, and stop cancelling the pending stop timer.
-2. **Sequential mode.** Zones currently run independently and can overlap. Real
-   plumbing often can't supply two zones at once — add an optional hub-level
-   "run zones sequentially" that queues overlapping starts.
+2. ~~**Sequential mode.**~~ **Done.** A hub-level "Run zones sequentially"
+   switch (`HubRuntime.sequential`) queues a start that would overlap another
+   running zone and releases it when that zone stops. Adopted runs bypass the
+   queue (the valve is already open); the queue is not persisted (a queued run
+   never opened a valve, so a restart safely forgets it). Status sensor shows
+   `queued`.
 3. **`weekdays` is subentry-only.** Changing days means a reconfigure flow.
    Consider seven `switch` entities per zone, or a `select` with presets.
 4. **Valve unavailability.** If the valve entity is `unavailable` at start time
