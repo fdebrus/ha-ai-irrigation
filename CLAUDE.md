@@ -129,8 +129,11 @@ Known gaps — pick these up in roughly this order:
    queue (the valve is already open); the queue is not persisted (a queued run
    never opened a valve, so a restart safely forgets it). Status sensor shows
    `queued`.
-3. **`weekdays` is subentry-only.** Changing days means a reconfigure flow.
-   Consider seven `switch` entities per zone, or a `select` with presets.
+3. ~~**`weekdays` is subentry-only.**~~ **Done.** Seven per-zone `switch`
+   entities (`weekday_mon`..`weekday_sun`, config category) own the zone's
+   `weekdays` list and restore it across restarts; the subentry still seeds the
+   initial values. Same source-of-truth model as `duration`/`start_time`
+   (invariant 5): the subentry selector remains as an initial default only.
 4. **Valve unavailability.** If the valve entity is `unavailable` at start time
    the service call silently does nothing. Detect it, log a warning, and set the
    status sensor to `valve_unavailable`.

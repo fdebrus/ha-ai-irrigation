@@ -5,9 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.const import STATE_ON
+from homeassistant.const import STATE_ON, EntityCategory
 from homeassistant.helpers.restore_state import RestoreEntity
 
+from .const import WEEKDAY_KEYS
 from .entity import IrrigationHubEntity, IrrigationZoneEntity
 
 if TYPE_CHECKING:
@@ -33,7 +34,13 @@ async def async_setup_entry(
         ]
     )
     for subentry_id, zone in data.zones.items():
-        async_add_entities([ZoneEnabledSwitch(zone)], config_subentry_id=subentry_id)
+        async_add_entities(
+            [
+                ZoneEnabledSwitch(zone),
+                *(ZoneWeekdaySwitch(zone, day) for day in WEEKDAY_KEYS),
+            ],
+            config_subentry_id=subentry_id,
+        )
 
 
 class _RestoringSwitch(SwitchEntity, RestoreEntity):
@@ -131,3 +138,34 @@ class ZoneEnabledSwitch(IrrigationZoneEntity, _RestoringSwitch):
 
     def _apply(self, *, value: bool) -> None:
         self.zone.enabled = value
+
+
+class ZoneWeekdaySwitch(IrrigationZoneEntity, _RestoringSwitch):
+    """
+    Whether the zone runs on one weekday.
+
+    Seven per zone. The zone's ``weekdays`` list is owned by these switches and
+    restored across restarts; the subentry only seeds the initial values.
+    """
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:calendar-check"
+
+    def __init__(self, zone: ZoneRuntime, day: str) -> None:
+        """Initialise for a single weekday key (mon..sun)."""
+        IrrigationZoneEntity.__init__(self, zone, f"weekday_{day}")
+        self._day = day
+
+    @property
+    def is_on(self) -> bool:
+        """Return whether the zone runs on this weekday."""
+        return self._day in self.zone.weekdays
+
+    def _apply(self, *, value: bool) -> None:
+        present = set(self.zone.weekdays)
+        if value:
+            present.add(self._day)
+        else:
+            present.discard(self._day)
+        # Keep the list in calendar order so the status attributes read nicely.
+        self.zone.weekdays = [day for day in WEEKDAY_KEYS if day in present]

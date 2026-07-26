@@ -37,6 +37,14 @@ ZONE_ENTITY_KEYS = {
     "status",  # sensor
     "run_now",  # button
     "stop",  # button
+    # seven weekday switches
+    "weekday_mon",
+    "weekday_tue",
+    "weekday_wed",
+    "weekday_thu",
+    "weekday_fri",
+    "weekday_sat",
+    "weekday_sun",
 }
 # The entities the hub device owns when no weather entity is configured.
 HUB_ENTITY_KEYS = {
@@ -109,6 +117,30 @@ async def test_setup_creates_entities_on_the_right_devices(
     # Every entity produced a state.
     for entity in (*zone_entities, *hub_entities):
         assert hass.states.get(entity.entity_id) is not None
+
+
+async def test_weekday_switch_owns_the_zone_weekdays(
+    hass: HomeAssistant,
+) -> None:
+    """Toggling a weekday switch updates the zone's weekdays list."""
+    entry = await _setup(hass)
+    subentry_id = next(iter(entry.subentries))
+    zone = entry.runtime_data.zones[subentry_id]
+    assert "wed" in zone.weekdays  # seeded from the subentry
+
+    ent_reg = er.async_get(hass)
+    wed = ent_reg.async_get_entity_id("switch", DOMAIN, f"{subentry_id}_weekday_wed")
+    assert wed is not None
+
+    await hass.services.async_call(
+        "switch", "turn_off", {"entity_id": wed}, blocking=True
+    )
+    assert "wed" not in zone.weekdays
+
+    await hass.services.async_call(
+        "switch", "turn_on", {"entity_id": wed}, blocking=True
+    )
+    assert "wed" in zone.weekdays
 
 
 async def test_unload_is_clean(hass: HomeAssistant) -> None:

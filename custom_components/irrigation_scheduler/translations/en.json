@@ -77,7 +77,14 @@
       "master": { "name": "Master" },
       "rain_skip": { "name": "Rain skip" },
       "sequential": { "name": "Run zones sequentially" },
-      "enabled": { "name": "Enabled" }
+      "enabled": { "name": "Enabled" },
+      "weekday_mon": { "name": "Monday" },
+      "weekday_tue": { "name": "Tuesday" },
+      "weekday_wed": { "name": "Wednesday" },
+      "weekday_thu": { "name": "Thursday" },
+      "weekday_fri": { "name": "Friday" },
+      "weekday_sat": { "name": "Saturday" },
+      "weekday_sun": { "name": "Sunday" }
     },
     "number": {
       "duration": { "name": "Duration" },
