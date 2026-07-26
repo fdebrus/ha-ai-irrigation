@@ -120,8 +120,11 @@ Hub: `switch.irrigation_master`, `switch.irrigation_rain_skip`,
 - Use `entry.runtime_data`, not `hass.data[DOMAIN]`.
 - `weather.get_forecasts` needs `blocking=True, return_response=True` and
   returns `{entity_id: {"forecast": [...]}}`. `get_forecast` (singular) is gone.
-- `ai_task.generate_data` likewise needs `return_response=True`. Declare the
-  shape with `structure` — see `docs/ai-contract.md`.
+- `ai_task.generate_data` likewise needs `return_response=True`. Do **not**
+  pass `structure` — the Anthropic endpoint rejected our generated schema twice
+  in production (`minimum`/`maximum` unsupported, then "Schema is too
+  complex"). The format goes in the instructions and the reply is parsed
+  leniently — see `docs/ai-contract.md`.
 - **Sensor states cap at 255 characters.** The plan narrative goes in an
   attribute, never the state.
 - Entity names come from `_attr_translation_key` + `strings.json` with
@@ -162,7 +165,7 @@ them.
    binary_sensor; start times are read-only sensors; any duration/enabled/base
    change calls `scheduler.recompute_start_times` → `planner.apply_start_times`.
 
-4. ~~**AI layer.**~~ **Done.** `ai.py` builds the `ai_task` `structure` from the
+4. ~~**AI layer.**~~ **Done.** `ai.py` builds the response format from the
    configured zones, requests the nightly plan, and applies it through
    `planner.clamp_zone_plan` / `clamp_rain_threshold`. Every field falls back to
    the current value, running zones are deferred, an overlap rolls the plan back

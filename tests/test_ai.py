@@ -12,7 +12,11 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from custom_components.irrigation_scheduler import ai as ai_module
-from custom_components.irrigation_scheduler.ai import IrrigationAI, build_structure
+from custom_components.irrigation_scheduler.ai import (
+    IrrigationAI,
+    build_response_format,
+    parse_plan,
+)
 from custom_components.irrigation_scheduler.models import (
     DriverType,
     HubState,
@@ -67,22 +71,33 @@ def _make_ai(
     return ai, hub
 
 
-# --- build_structure -------------------------------------------------------
-def test_build_structure_offers_enabled_only_for_seasonal_zones():
-    fields = build_structure(_garden())
-    assert "jardin_duration" in fields
-    assert "jardin_enabled" not in fields  # not seasonal
-    assert "gazon_enabled" in fields  # seasonal
-    # The Anthropic structured-output schema rejects minimum/maximum on numbers,
-    # so the selector carries no min/max and the bounds live in the description.
-    number = fields["jardin_duration"]["selector"]["number"]
-    assert "min" not in number
-    assert "max" not in number
-    assert number["mode"] == "box"
-    assert "5" in fields["jardin_duration"]["description"]
-    assert "30" in fields["jardin_duration"]["description"]
-    assert "rain_threshold" in fields
-    assert "narrative" in fields
+# --- build_response_format -------------------------------------------------
+def test_response_format_offers_enabled_only_for_seasonal_zones():
+    text = build_response_format(_garden())
+    assert "jardin_duration" in text
+    assert "jardin_enabled" not in text  # not seasonal
+    assert "gazon_enabled" in text  # seasonal
+    assert "jardin_duration: 5-30" in text  # bounds are spelled out
+    assert "rain_threshold" in text
+    assert "narrative" in text
+    assert "daily" in text  # the schedule presets are listed
+
+
+# --- parse_plan: lenient like the YAML package was --------------------------
+def test_parse_plan_accepts_raw_and_fenced_json():
+    assert parse_plan('{"a": 1}') == {"a": 1}
+    assert parse_plan('```json\n{"a": 1}\n```') == {"a": 1}
+    assert parse_plan({"a": 1}) == {"a": 1}  # already structured
+
+
+def test_parse_plan_rejects_non_objects():
+    for bad in (None, "not json at all", "[1, 2]", 42):
+        try:
+            parse_plan(bad)
+        except (TypeError, ValueError):
+            continue
+        msg = f"parse_plan accepted {bad!r}"
+        raise AssertionError(msg)
 
 
 # --- _apply_plan: the happy path -------------------------------------------
@@ -194,6 +209,27 @@ async def test_apply_plan_rolls_back_on_overlap(
     assert hub.rain_threshold == 65  # rolled back
     assert hub.last_plan_failed is True
     assert hub.last_plan_date is None  # plan not accepted
+
+
+# --- end to end: a fenced text reply is parsed and applied ------------------
+async def test_generate_plan_applies_a_fenced_text_reply(hass: HomeAssistant):
+    zones = _garden()
+    ai, hub = _make_ai(hass, zones)
+
+    async def _reply(_call: ServiceCall) -> dict:
+        return {
+            "data": '```json\n{"jardin_duration": 22, "rain_threshold": 70,'
+            ' "narrative": "Sec."}\n```'
+        }
+
+    hass.services.async_register(
+        "ai_task", "generate_data", _reply, supports_response="only"
+    )
+    await ai.async_generate_plan(force=True)
+    await hass.async_block_till_done()
+    assert zones["z1"].duration_minutes == 22
+    assert hub.rain_threshold == 70
+    assert hub.last_plan_failed is False
 
 
 # --- the failure path: ai_task raising keeps yesterday's plan --------------
