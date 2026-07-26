@@ -81,15 +81,15 @@ _INT_FIELDS = (
 
 
 def _number(low: float, high: float, step: float, unit: str | None = None):  # noqa: ANN202
-    return selector.NumberSelector(
-        selector.NumberSelectorConfig(
-            min=low,
-            max=high,
-            step=step,
-            mode=selector.NumberSelectorMode.BOX,
-            unit_of_measurement=unit,
-        )
-    )
+    config: dict[str, Any] = {
+        "min": low,
+        "max": high,
+        "step": step,
+        "mode": selector.NumberSelectorMode.BOX,
+    }
+    if unit is not None:
+        config["unit_of_measurement"] = unit
+    return selector.NumberSelector(selector.NumberSelectorConfig(config))
 
 
 HUB_SCHEMA = vol.Schema(

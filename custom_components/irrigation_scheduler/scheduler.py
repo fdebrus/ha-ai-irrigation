@@ -38,6 +38,7 @@ from .models import (
     should_skip_for_rain,
     slot_due,
 )
+from .planner import apply_start_times
 
 if TYPE_CHECKING:
     from asyncio import TimerHandle
@@ -89,10 +90,23 @@ class IrrigationScheduler:
         self._unsub_stop: dict[str, CALLBACK_TYPE] = {}
         self._self_driven: set[str] = set()
         self._self_driven_timers: dict[str, TimerHandle | None] = {}
+        # Set by the pump watchdog (Phase 7); read by the no-flow binary sensor.
+        self.no_flow = False
 
     def set_drivers(self, drivers: dict[str, Driver]) -> None:
         """Attach the per-zone drivers."""
         self.drivers = drivers
+
+    @callback
+    def recompute_start_times(self) -> None:
+        """
+        Re-derive every zone's start times and refresh entities.
+
+        Call after any change to a duration, an enabled flag or a base time
+        (invariant 2) so the sequence never lets two zones share the pump.
+        """
+        apply_start_times(list(self.zones.values()), self.hub)
+        self._notify()
 
     # ------------------------------------------------------------------
     # Lifecycle

@@ -31,6 +31,7 @@ from .const import (
     CONF_ORDER,
     CONF_OUTLET_GAP,
     CONF_OUTLETS,
+    CONF_PLAN_AT,
     CONF_SEASONAL,
     CONF_SETTLE_MINUTES,
     CONF_START_BUTTON,
@@ -47,6 +48,7 @@ from .const import (
     DEFAULT_MORNING_BASE,
     DEFAULT_OUTLET_GAP,
     DEFAULT_OUTLETS,
+    DEFAULT_PLAN_AT,
     DEFAULT_SETTLE_MINUTES,
     PLATFORMS,
     SUBENTRY_TYPE_ZONE,
@@ -74,6 +76,7 @@ class IrrigationRuntimeData:
     drivers: dict[str, Driver]
     scheduler: IrrigationScheduler
     coordinator: RainCoordinator | None
+    ai: object | None = None  # IrrigationAI, attached in async_setup_entry (Phase 6)
 
 
 type IrrigationConfigEntry = ConfigEntry[IrrigationRuntimeData]
@@ -141,6 +144,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
         evening_base=_parse_time_or(
             entry.data.get(CONF_EVENING_BASE), DEFAULT_EVENING_BASE
         ),
+        plan_at=_parse_time_or(entry.data.get(CONF_PLAN_AT), DEFAULT_PLAN_AT),
         sequence_margin_minutes=int(
             entry.data.get(CONF_MARGIN_MINUTES, DEFAULT_MARGIN_MINUTES)
         ),

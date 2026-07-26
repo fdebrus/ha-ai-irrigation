@@ -149,16 +149,19 @@ Verify before a PR: `pytest`, `ruff`, then the `hassfest` and `hacs` workflows.
 Done: pure domain model and planner with tests (occupancy for all three driver
 types, sequencing, overlap detection, AI clamping).
 
+1. ~~**Drivers + scheduler.**~~ **Done.** `drivers.py` (Valve/Distributor/Button)
+   behind one interface; `scheduler.py` fires derived slots, runs/stops through
+   drivers, persists runs and recovers on restart, and adopts manual runs while
+   skipping button zones. One pump: a start stops any other running zone.
+2. ~~**Config flow.**~~ **Done.** Hub flow (weather, pump sensor, AI task, bases,
+   plan time, margin) plus a zone subentry flow with a driver-specific second
+   step (valve; valve + outlets + gap; or start/stop buttons).
+3. ~~**Platforms.**~~ **Done.** switch/number/select/time/sensor/button/
+   binary_sensor; start times are read-only sensors; any duration/enabled/base
+   change calls `scheduler.recompute_start_times` → `planner.apply_start_times`.
+
 To build, in order:
 
-1. **Drivers + scheduler.** Port run/stop, Store persistence and restart
-   recovery from the v0.1 scaffold, routed through drivers. Tests for restart
-   recovery both branches, and for the adoption listener skipping button zones.
-2. **Config flow.** Hub flow (weather entity, pump sensor, bases, plan time)
-   and a zone subentry flow whose second step is driver-specific: valve entity;
-   or valve + outlets + gap; or start/stop buttons. Plus description, hose
-   length, emitter rates, order, seasonal flag, bounds.
-3. **Platforms.** As listed above. Start times as sensors.
 4. **AI layer.** `docs/ai-contract.md` end to end. Test the clamping against
    real malformed responses, not just happy paths.
 5. **Pump watchdog.** Port the no-flow warning: zone running 3 minutes with

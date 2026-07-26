@@ -212,6 +212,7 @@ class HubState:
 
     morning_base: time = field(default_factory=lambda: time(5, 30))
     evening_base: time = field(default_factory=lambda: time(19, 0))
+    plan_at: time = field(default_factory=lambda: time(22, 30))
     sequence_margin_minutes: int = 5
     reserve_disabled_slots: bool = True
     """Keep a disabled zone's slot in the sequence instead of compressing it.
@@ -224,6 +225,8 @@ class HubState:
     last_plan_date: date | None = None
     last_plan_narrative: str | None = None
     last_plan_failed: bool = False
+    last_plan_rejections: list[str] = field(default_factory=list)
+    last_plan_generated_at: datetime | None = None
 
 
 # ---------------------------------------------------------------------------

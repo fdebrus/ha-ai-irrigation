@@ -3,20 +3,20 @@
     "step": {
       "user": {
         "title": "Irrigation Scheduler",
-        "description": "Pick the weather entity used for the rain skip. You can leave this empty and add it later; zones are added afterwards from the integration page.",
+        "description": "Set the shared hardware and timing. Zones are added afterwards from the integration page.",
         "data": {
-          "weather_entity": "Weather entity"
+          "weather_entity": "Weather entity (rain skip)",
+          "pump_sensor": "Pump running binary sensor",
+          "ai_task_entity": "AI task entity (nightly plan)",
+          "morning_base": "Morning sequence start",
+          "evening_base": "Evening sequence start",
+          "plan_at": "AI plan time",
+          "margin_minutes": "Margin between zones"
         }
       }
     },
     "abort": {
-      "already_configured": "Irrigation Scheduler is already set up. Add another zone instead."
-    }
-  },
-  "issues": {
-    "valve_missing": {
-      "title": "Irrigation zone valve is missing",
-      "description": "The valve entity `{entity_id}` for zone {zone} no longer exists. It was probably renamed or removed. Reconfigure the zone from the integration page to point at the current valve entity."
+      "already_configured": "Irrigation Scheduler is already set up. Add zones instead."
     }
   },
   "options": {
@@ -24,7 +24,13 @@
       "init": {
         "title": "Irrigation Scheduler",
         "data": {
-          "weather_entity": "Weather entity"
+          "weather_entity": "Weather entity (rain skip)",
+          "pump_sensor": "Pump running binary sensor",
+          "ai_task_entity": "AI task entity (nightly plan)",
+          "morning_base": "Morning sequence start",
+          "evening_base": "Evening sequence start",
+          "plan_at": "AI plan time",
+          "margin_minutes": "Margin between zones"
         }
       }
     }
@@ -38,43 +44,82 @@
       "entry_type": "Irrigation zone",
       "step": {
         "user": {
-          "title": "Add an irrigation zone",
+          "title": "Add a zone",
+          "description": "Describe the zone. The next step asks for the entities specific to its driver.",
           "data": {
             "name": "Zone name",
-            "valve_entity": "Valve or switch",
-            "default_start": "Start time",
-            "default_duration": "Run duration",
-            "weekdays": "Days",
+            "driver": "Driver",
+            "order": "Watering order",
+            "description": "Description (told to the AI)",
+            "hose_length_m": "Hose length (m)",
+            "emitter_min_lph_per_m": "Emitter min (L/h per m)",
+            "emitter_max_lph_per_m": "Emitter max (L/h per m)",
+            "default_duration": "Default duration",
+            "min_duration": "Minimum duration",
+            "max_duration": "Maximum duration",
+            "default_schedule": "Default schedule",
+            "seasonal": "Seasonal (AI may enable/disable)",
             "adopt_manual_runs": "Adopt manual runs"
-          },
-          "data_description": {
-            "adopt_manual_runs": "When on, opening the valve from HomeKit, Google Home or by hand starts a tracked run that the scheduler will close after the configured duration. Leave off if you want manual runs to stay untouched."
           }
         },
         "reconfigure": {
           "title": "Edit zone",
           "data": {
             "name": "Zone name",
-            "valve_entity": "Valve or switch",
-            "default_start": "Start time",
-            "default_duration": "Run duration",
-            "weekdays": "Days",
+            "driver": "Driver",
+            "order": "Watering order",
+            "description": "Description (told to the AI)",
+            "hose_length_m": "Hose length (m)",
+            "emitter_min_lph_per_m": "Emitter min (L/h per m)",
+            "emitter_max_lph_per_m": "Emitter max (L/h per m)",
+            "default_duration": "Default duration",
+            "min_duration": "Minimum duration",
+            "max_duration": "Maximum duration",
+            "default_schedule": "Default schedule",
+            "seasonal": "Seasonal (AI may enable/disable)",
             "adopt_manual_runs": "Adopt manual runs"
+          }
+        },
+        "valve": {
+          "title": "Valve",
+          "data": {
+            "valve_entity": "Valve or switch"
+          }
+        },
+        "distributor": {
+          "title": "Distributor",
+          "data": {
+            "valve_entity": "Valve",
+            "outlets": "Outlets",
+            "outlet_gap_seconds": "Gap between outlets (s)"
+          }
+        },
+        "buttons": {
+          "title": "Buttons",
+          "data": {
+            "start_button": "Start button",
+            "stop_button": "Stop button"
           }
         }
       }
     }
   },
   "selector": {
-    "weekdays": {
+    "driver": {
       "options": {
-        "mon": "Monday",
-        "tue": "Tuesday",
-        "wed": "Wednesday",
-        "thu": "Thursday",
-        "fri": "Friday",
-        "sat": "Saturday",
-        "sun": "Sunday"
+        "valve": "Valve or switch",
+        "distributor": "Distributor (multi-outlet)",
+        "button": "Start/stop buttons"
+      }
+    },
+    "schedule": {
+      "options": {
+        "daily": "Daily",
+        "weekdays": "Weekdays",
+        "weekends": "Weekends",
+        "mon_wed_fri": "Mon / Wed / Fri",
+        "tue_thu_sat": "Tue / Thu / Sat",
+        "mon_thu": "Mon / Thu"
       }
     }
   },
@@ -82,34 +127,50 @@
     "switch": {
       "master": { "name": "Master" },
       "rain_skip": { "name": "Rain skip" },
-      "sequential": { "name": "Run zones sequentially" },
+      "ai": { "name": "AI plan" },
       "enabled": { "name": "Enabled" },
-      "weekday_mon": { "name": "Monday" },
-      "weekday_tue": { "name": "Tuesday" },
-      "weekday_wed": { "name": "Wednesday" },
-      "weekday_thu": { "name": "Thursday" },
-      "weekday_fri": { "name": "Friday" },
-      "weekday_sat": { "name": "Saturday" },
-      "weekday_sun": { "name": "Sunday" }
+      "second_run": { "name": "Second run" }
     },
     "number": {
-      "duration": { "name": "Duration" },
       "rain_threshold": { "name": "Rain threshold" },
-      "rain_mm_threshold": { "name": "Rain amount threshold" }
+      "duration": { "name": "Duration" }
+    },
+    "select": {
+      "schedule": {
+        "name": "Schedule",
+        "state": {
+          "daily": "Daily",
+          "weekdays": "Weekdays",
+          "weekends": "Weekends",
+          "mon_wed_fri": "Mon / Wed / Fri",
+          "tue_thu_sat": "Tue / Thu / Sat",
+          "mon_thu": "Mon / Thu"
+        }
+      }
     },
     "time": {
-      "start_time": { "name": "Start time" }
+      "morning_base": { "name": "Morning base" },
+      "evening_base": { "name": "Evening base" },
+      "plan_at": { "name": "Plan time" }
     },
     "sensor": {
+      "rain_probability": { "name": "Rain probability" },
+      "daily_plan": { "name": "Daily plan" },
+      "morning_start": { "name": "Morning start" },
+      "evening_start": { "name": "Evening start" },
       "next_run": { "name": "Next run" },
       "finishes_at": { "name": "Finishes at" },
-      "status": { "name": "Status" },
-      "rain_probability": { "name": "Rain probability" }
+      "status": { "name": "Status" }
     },
     "button": {
+      "stop_all": { "name": "Stop all" },
+      "plan_now": { "name": "Plan now" },
       "run_now": { "name": "Run now" },
-      "stop": { "name": "Stop" },
-      "stop_all": { "name": "Stop all" }
+      "stop": { "name": "Stop" }
+    },
+    "binary_sensor": {
+      "overlap": { "name": "Schedule overlap" },
+      "no_flow": { "name": "No flow" }
     }
   },
   "services": {
@@ -125,7 +186,7 @@
     },
     "stop_zone": {
       "name": "Stop zone",
-      "description": "Close a zone's valve and cancel its run."
+      "description": "Stop a zone and cancel its run."
     }
   }
 }
