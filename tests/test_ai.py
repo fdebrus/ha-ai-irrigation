@@ -89,7 +89,14 @@ async def test_instructions_carry_current_settings_and_rules(hass: HomeAssistant
     zones["z1"].second_run = True
     zones["z2"].enabled = False
     ai, hub = _make_ai(hass, zones)
-    text = ai._build_instructions(forecast=[])
+    text = ai._build_instructions(
+        forecast=[
+            # Met.no-style day: an amount in mm but no probability.
+            {"datetime": "2026-07-28", "temperature": 28.4, "precipitation": 0.2}
+        ]
+    )
+    # The forecast line shows the rain amount even when probability is absent.
+    assert "rain ?%, 0.2 mm" in text
     # Current settings per zone, so "change as little as possible" has a basis.
     assert "evening on" in text  # Jardin's 2nd run state
     assert "CURRENTLY DISABLED" in text  # Gazon is off

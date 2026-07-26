@@ -318,10 +318,13 @@ class IrrigationAI:
             "",
             "Forecast:",
         ]
+        # Show whatever rain signal the provider has: some (Met.no daily among
+        # them) publish no probability but do publish an amount in mm.
         lines.extend(
             f"- {str(day.get('datetime', ''))[:10]}: max "
             f"{day.get('temperature')}C, rain "
-            f"{day.get('precipitation_probability', '?')}%"
+            f"{day.get('precipitation_probability', '?')}%, "
+            f"{day.get('precipitation', '?')} mm"
             for day in forecast
         )
         lines.append("")
@@ -357,8 +360,9 @@ class IrrigationAI:
                 "robust zones are lengthened rather than moved to daily.",
                 "- Normal weather for the region (<26C or regular rain): base "
                 "regimes, all evening runs off.",
-                "- Heavy rain expected (>70% over several days): reduced "
-                "durations, the automatic rain skip does the rest.",
+                "- Heavy rain expected (>70% probability, or substantial mm, "
+                "over several days): reduced durations, the automatic rain "
+                "skip does the rest.",
                 "- rain_threshold: dry heat wave with sheltered beds 80-85 "
                 "(avoid false skips); changeable weather 60-65; very rainy "
                 "spell 50-55 (save water).",
