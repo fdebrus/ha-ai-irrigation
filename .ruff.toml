@@ -15,6 +15,20 @@ ignore = [
     "ISC001", # incompatible with formatter
 ]
 
+[lint.per-file-ignores]
+# Tests are held to a looser standard than the integration code, mirroring
+# home-assistant/core's own tests/* ignores.
+"tests/*" = [
+    "S101",    # asserts are the point of a test
+    "ANN",     # annotating every test function/fixture adds noise
+    "D",       # docstrings are not required on test functions
+    "INP001",  # tests/ is collected by pytest, not imported as a package
+    "DTZ",     # naive datetimes are fine in fixtures
+    "ARG",     # pytest fixtures arrive as unused-looking arguments
+    "PLR2004", # magic values are normal in assertions
+    "SLF001",  # tests deliberately reach into private scheduler state
+]
+
 [lint.flake8-pytest-style]
 fixture-parentheses = false
 

@@ -44,13 +44,14 @@ People *love* thorough bug reports. I'm not even kidding.
 
 ## Use a Consistent Coding Style
 
-Use [black](https://github.com/ambv/black) to make sure the code follows the style.
+Use [ruff](https://github.com/astral-sh/ruff) to make sure the code follows the
+style; `scripts/lint` runs both `ruff check` and `ruff format`.
 
 ## Test your code modification
 
-This custom component is based on [integration_blueprint template](https://github.com/ludeeus/integration_blueprint).
+Run the test suite with `pytest` before opening a pull request.
 
-It comes with development environment in a container, easy to launch
+This repository ships a development environment in a container, easy to launch
 if you use Visual Studio Code. With this container you will have a stand alone
 Home Assistant instance running and already configured with the included
 [`configuration.yaml`](./config/configuration.yaml)
