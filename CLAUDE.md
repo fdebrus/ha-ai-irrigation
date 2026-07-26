@@ -112,11 +112,17 @@ Actions in `.github/workflows/validate.yml`.
 Working: config flow with subentries, per-zone entities, minute tick, rain skip,
 run/stop buttons and entity services, restart recovery, manual-run adoption.
 
+Tested: `should_start` logic, config-entry setup/unload with a zone subentry,
+and the scheduler's dangerous paths — restart recovery (expired run closes the
+valve, future run re-arms its stop timer), adoption on/off, `_self_driven`
+suppression, and stop cancelling a pending close.
+
 Known gaps — pick these up in roughly this order:
 
-1. **No tests beyond `should_start`.** Add tests for restart recovery (a stored
-   run whose end time has passed must close the valve) and for the adoption
-   listener. This is the highest-value gap.
+1. ~~**No tests beyond `should_start`.**~~ **Done.** `tests/test_setup.py`
+   covers setup/unload; `tests/test_scheduler.py` covers restart recovery (both
+   branches), the adoption listener with `adopt_manual_runs` on and off, the
+   self-driven suppression, and stop cancelling the pending stop timer.
 2. **Sequential mode.** Zones currently run independently and can overlap. Real
    plumbing often can't supply two zones at once — add an optional hub-level
    "run zones sequentially" that queues overlapping starts.
