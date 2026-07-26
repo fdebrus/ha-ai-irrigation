@@ -14,10 +14,12 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from homeassistant.const import ATTR_ENTITY_ID
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.irrigation_scheduler.const import (
+    DOMAIN,
     SOURCE_ADOPTED,
     SOURCE_MANUAL,
     STORAGE_KEY,
@@ -377,5 +379,41 @@ async def test_start_is_skipped_when_the_valve_entity_is_missing(
     assert not zone.is_running
     assert zone.last_skipped_reason == "valve_unavailable"
     assert calls == []
+
+    await scheduler.async_shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Repair issues -- gap 6
+# ---------------------------------------------------------------------------
+async def test_missing_valve_raises_a_repair_issue(
+    hass: HomeAssistant, freezer
+) -> None:
+    """A zone whose valve entity does not exist raises a repair issue."""
+    freezer.move_to("2026-07-27 06:00:00+00:00")
+    zone = _zone(valve_entity_id="valve.renamed_away")
+
+    scheduler = IrrigationScheduler(hass, HubRuntime(), {"zone1": zone}, None)
+    await scheduler.async_start()
+
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, "valve_missing_zone1")
+    assert issue is not None
+    assert issue.translation_key == "valve_missing"
+
+    await scheduler.async_shutdown()
+
+
+async def test_present_valve_raises_no_repair_issue(
+    hass: HomeAssistant, freezer
+) -> None:
+    """A zone whose valve exists raises no issue."""
+    freezer.move_to("2026-07-27 06:00:00+00:00")
+    zone = _zone()
+    hass.states.async_set(VALVE, "closed")
+
+    scheduler = IrrigationScheduler(hass, HubRuntime(), {"zone1": zone}, None)
+    await scheduler.async_start()
+
+    assert ir.async_get(hass).async_get_issue(DOMAIN, "valve_missing_zone1") is None
 
     await scheduler.async_shutdown()

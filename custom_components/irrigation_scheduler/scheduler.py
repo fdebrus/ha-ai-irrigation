@@ -23,6 +23,8 @@ from homeassistant.core import (
     HomeAssistant,
     callback,
 )
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import (
     async_track_point_in_utc_time,
@@ -33,6 +35,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    DOMAIN,
     SIGNAL_ZONE_UPDATED,
     SOURCE_ADOPTED,
     SOURCE_MANUAL,
@@ -81,6 +84,7 @@ class IrrigationScheduler:
     async def async_start(self) -> None:
         """Restore any in-flight runs and arm the tick."""
         await self._async_restore_runs()
+        self._check_valve_entities()
 
         self._unsub_tick = async_track_time_change(
             self.hass, self._async_tick, second=0
@@ -298,6 +302,41 @@ class IrrigationScheduler:
         self._unsub_stop[zone_id] = async_track_point_in_utc_time(
             self.hass, _fire, ends_at
         )
+
+    # ------------------------------------------------------------------
+    # Repair issues
+    # ------------------------------------------------------------------
+    def _check_valve_entities(self) -> None:
+        """
+        Raise a repair issue for any zone whose valve entity is gone.
+
+        A rename or removal of the user's valve leaves the zone pointing at an
+        entity id that no longer resolves, and the service call would silently
+        do nothing. The registry check tolerates load order: a valve that is
+        merely not loaded yet this boot is still registered.
+        """
+        ent_reg = er.async_get(self.hass)
+        for zone in self.zones.values():
+            issue_id = f"valve_missing_{zone.subentry_id}"
+            exists = bool(zone.valve_entity_id) and (
+                ent_reg.async_get(zone.valve_entity_id) is not None
+                or self.hass.states.get(zone.valve_entity_id) is not None
+            )
+            if exists:
+                ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            else:
+                ir.async_create_issue(
+                    self.hass,
+                    DOMAIN,
+                    issue_id,
+                    is_fixable=False,
+                    severity=ir.IssueSeverity.WARNING,
+                    translation_key="valve_missing",
+                    translation_placeholders={
+                        "zone": zone.name,
+                        "entity_id": zone.valve_entity_id or "",
+                    },
+                )
 
     # ------------------------------------------------------------------
     # Valve I/O

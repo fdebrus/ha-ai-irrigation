@@ -13,6 +13,12 @@
       "already_configured": "Irrigation Scheduler is already set up. Add another zone instead."
     }
   },
+  "issues": {
+    "valve_missing": {
+      "title": "Irrigation zone valve is missing",
+      "description": "The valve entity `{entity_id}` for zone {zone} no longer exists. It was probably renamed or removed. Reconfigure the zone from the integration page to point at the current valve entity."
+    }
+  },
   "options": {
     "step": {
       "init": {

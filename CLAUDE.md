@@ -145,8 +145,10 @@ Known gaps — pick these up in roughly this order:
    new `rain_mm_threshold` (hub number entity, default 2 mm). A missing
    probability still never reads as 0% — it defers to mm, and both missing means
    the zone waters.
-6. **No repair issues.** Use `homeassistant.helpers.issue_registry` when a zone's
-   valve entity no longer exists after a rename.
+6. ~~**No repair issues.**~~ **Done.** `IrrigationScheduler._check_valve_entities`
+   (run at start) raises a `valve_missing_<subentry_id>` repair issue when a
+   zone's valve is neither registered nor present, and clears it once the valve
+   resolves. The registry check tolerates startup load order.
 7. **Quality scale.** `manifest.json` has no `quality_scale` yet. Adding
    `"quality_scale": "silver"` makes hassfest check for things like unique IDs
    and unavailability handling.
