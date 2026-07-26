@@ -426,3 +426,33 @@ async def test_missing_zone_entity_raises_and_clears_a_repair_issue(
     await _fire_tick(hass)
     assert registry.async_get_issue(DOMAIN, "zone_entity_missing_z1") is None
     await sched.async_shutdown()
+
+
+async def test_no_flow_not_flagged_when_pump_sensor_missing_or_unavailable(
+    hass: HomeAssistant, freezer
+) -> None:
+    """A deleted or offline pump sensor is no signal, never a dry pump."""
+    freezer.move_to("2026-07-27 06:00:00+00:00")
+    zones = {"z1": _valve_zone("z1")}
+    _wire(hass)
+    hass.states.async_set("valve.z1", "closed")
+    # Configured pump sensor deliberately has NO state (deleted template sensor).
+    sched = _make(hass, zones, pump_sensor_id="binary_sensor.pump")
+    await sched.async_start()
+    await sched.async_start_zone("z1")
+    freezer.tick(timedelta(minutes=5))
+    await _fire_tick(hass)
+    assert not sched.no_flow
+
+    # An offline smart plug (unavailable) is equally not "off".
+    hass.states.async_set("binary_sensor.pump", "unavailable")
+    freezer.tick(timedelta(minutes=1))
+    await _fire_tick(hass)
+    assert not sched.no_flow
+
+    # A real "off" past the grace window still flags.
+    hass.states.async_set("binary_sensor.pump", "off")
+    freezer.tick(timedelta(minutes=1))
+    await _fire_tick(hass)
+    assert sched.no_flow
+    await sched.async_shutdown()
