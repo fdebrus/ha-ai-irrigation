@@ -83,6 +83,26 @@ def test_response_format_offers_enabled_only_for_seasonal_zones():
     assert "daily" in text  # the schedule presets are listed
 
 
+# --- the instructions carry the duration-adjustment rules -------------------
+async def test_instructions_carry_current_settings_and_rules(hass: HomeAssistant):
+    zones = _garden()
+    zones["z1"].second_run = True
+    zones["z2"].enabled = False
+    ai, hub = _make_ai(hass, zones)
+    text = ai._build_instructions(forecast=[])
+    # Current settings per zone, so "change as little as possible" has a basis.
+    assert "soir on" in text  # Jardin's 2nd run state
+    assert "ACTUELLEMENT DESACTIVEE" in text  # Gazon is off
+    assert f"Seuil rain-skip actuel: {hub.rain_threshold}%" in text
+    # The regime rules that drive per-zone duration changes.
+    assert "Ajuste les DUREES par zone" in text
+    assert "Canicule" in text
+    assert "borne haute" in text
+    assert "facteur 5" in text
+    # The format block closes the prompt.
+    assert "FORMAT DE RÉPONSE" in text
+
+
 # --- parse_plan: lenient like the YAML package was --------------------------
 def test_parse_plan_accepts_raw_and_fenced_json():
     assert parse_plan('{"a": 1}') == {"a": 1}

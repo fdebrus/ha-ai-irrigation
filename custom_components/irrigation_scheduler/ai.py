@@ -312,7 +312,6 @@ class IrrigationAI:
             "Les heures de depart sont calculees par le systeme -- ne t'en "
             "occupe pas. Toutes les zones partagent une pompe et ne tournent "
             "jamais en meme temps.",
-            "Change le moins possible: si le plan actuel convient, renvoie-le.",
             "",
             "Previsions:",
         ]
@@ -323,21 +322,49 @@ class IrrigationAI:
             for day in forecast
         )
         lines.append("")
-        lines.append("Zones:")
+        lines.append("Zones (reglages ACTUELS):")
         for zone in self._zones.values():
             brief = zone_briefing(zone)
             seasonal = " [saisonnier: tu decides enabled]" if zone.spec.seasonal else ""
+            state = "" if brief["enabled"] else " ACTUELLEMENT DESACTIVEE,"
             lines.append(
-                f"- {brief['name']}{seasonal}: {brief['description']} | "
+                f"- {brief['name']}{seasonal}:{state} "
                 f"{brief['duration_minutes']} min, {brief['schedule']}, "
+                f"soir {'on' if brief['second_run'] else 'off'}, "
                 f"~{brief['litres_per_run']} L/run, "
-                f"bornes {brief['duration_bounds']}"
+                f"bornes {brief['duration_bounds'][0]}-{brief['duration_bounds'][1]} "
+                f"min | {brief['description']}"
             )
-        lines.append("")
         lines.append(
-            "Raisonne en litres delivres; les debits par minute varient d'un "
-            "facteur 5, n'ajuste jamais uniformement toutes les zones. Le seuil "
-            "de pluie est un entier 50-90."
+            f"Seuil rain-skip actuel: {self._hub.rain_threshold}% (l'arrosage "
+            "est saute au moment du run si la proba de pluie depasse ce seuil "
+            "-- mecanisme temps reel, ne gere pas les skips toi-meme)."
+        )
+        lines.extend(
+            [
+                "",
+                "REGLES:",
+                "- Ajuste les DUREES par zone, pas seulement les jours. Pour "
+                "donner plus d'eau a une zone: monte sa duree vers sa borne "
+                "haute et/ou active son 2nd run (soir). Pour en donner moins: "
+                "baisse la duree vers la borne basse.",
+                "- Canicule (2+ jours consecutifs >= 28C sans pluie "
+                "significative): bacs sureleves et jeunes plantations en Daily "
+                "avec durees adaptees a leur debit, 2nd runs utiles actives; "
+                "zones robustes rallongees plutot que passees en Daily.",
+                "- Temps belge normal (<26C ou pluie reguliere): regimes de "
+                "base, tous les 2nd runs off.",
+                "- Pluie abondante prevue (>70% plusieurs jours): durees "
+                "reduites, le rain-skip automatique fait le reste.",
+                "- rain_threshold: canicule seche avec bacs abrites 80-85 "
+                "(eviter les faux skips); temps changeant 60-65; periode tres "
+                "pluvieuse 50-55 (economiser la citerne).",
+                "- Raisonne en litres delivres; les debits par minute varient "
+                "d'un facteur 5, n'ajuste jamais uniformement toutes les "
+                "zones.",
+                "- Change le moins possible: si le plan actuel convient, "
+                "renvoie-le tel quel.",
+            ]
         )
         lines.append("")
         lines.append(build_response_format(self._zones))
