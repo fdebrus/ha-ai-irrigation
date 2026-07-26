@@ -39,27 +39,31 @@ French dashboard.
 
 ## Response schema
 
-Request it with `ai_task.generate_data`'s `structure` parameter, **not** by
-asking for raw JSON in the instructions. The YAML version asked for
-`JSON brut sur une ligne`, then stripped markdown fences before `from_json`;
-that hack disappears once the shape is declared.
+Request it as **raw one-line JSON in the instructions** via a format block
+built dynamically from the configured zones (`build_response_format`), and
+parse the reply leniently — strip markdown fences before `json.loads`
+(`parse_plan`), exactly as the YAML package did.
 
-`structure` uses Home Assistant's selector system. Build it dynamically from
-the configured zones, one group of keys per zone slug:
+Do **not** use `ai_task.generate_data`'s `structure` parameter. It was tried
+first and the Anthropic structured-output endpoint rejected the generated
+schema twice in production: `400 — For 'number' type, properties maximum,
+minimum are not supported`, and after removing those, `400 — Schema is too
+complex` (five 6-value schedule enums). The instructions-based format worked
+for a full season; the real enforcement is the clamp layer, not the schema.
+
+One group of keys per zone slug, flat rather than nested:
 
 ```
-<slug>_duration      number selector, min/max from the zone's spec
-<slug>_schedule      select selector, options = SchedulePreset values
-<slug>_second_run    boolean selector
-<slug>_enabled       boolean selector — ONLY for zones flagged seasonal
-rain_threshold       number selector, 50-90
-narrative            text selector, multiline
+<slug>_duration      integer minutes; bounds spelled out in the format block
+<slug>_schedule      string; allowed values = SchedulePreset values, listed
+<slug>_second_run    boolean
+<slug>_enabled       boolean — ONLY for zones flagged seasonal
+rain_threshold       integer, 50-90
+narrative            string, French
 ```
 
-Flat keys rather than a nested `zones` object: it mirrors what already works in
-production and avoids depending on nested-object support in the selector
-schema. If the installed HA version handles an `object` selector cleanly, a
-nested shape is tidier — verify before switching, do not assume.
+The example object in the format block carries each zone's *current* values,
+which doubles as the "change as little as possible" instruction.
 
 ## Validation
 

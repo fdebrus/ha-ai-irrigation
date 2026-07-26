@@ -8,12 +8,15 @@ returns passes through ``planner.clamp_zone_plan`` / ``clamp_rain_threshold``,
 which fall back to the current value, so any failure degrades to yesterday's
 plan rather than to a stopped scheduler (invariant 7).
 
-The response shape is declared with ``ai_task``'s ``structure`` parameter, built
-dynamically from the configured zones -- no hand-maintained prompt block.
+The response shape is requested as raw JSON via a format block built
+dynamically from the configured zones (see ``build_response_format`` for why
+``ai_task``'s ``structure`` parameter is deliberately not used) -- no
+hand-maintained prompt block.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -54,53 +57,62 @@ _OVERLAP_ISSUE = "ai_plan_overlap"
 _FORECAST_DAYS = 5
 
 
-def build_structure(zones: Mapping[str, ZoneState]) -> dict[str, Any]:
+def build_response_format(zones: Mapping[str, ZoneState]) -> str:
     """
-    Build the ai_task ``structure`` from the configured zones.
+    Describe the exact JSON reply expected, built from the configured zones.
 
-    Flat ``<slug>_field`` keys, one group per zone, plus the shared rain
-    threshold and the narrative. ``enabled`` is offered only for seasonal zones.
+    The plan is requested as raw JSON in the instructions rather than through
+    ``ai_task``'s ``structure`` parameter: the Anthropic structured-output
+    endpoint rejected the generated schema twice in production (first
+    ``minimum``/``maximum`` on numbers, then "Schema is too complex" from the
+    five 6-value schedule enums). The reference YAML package always used a
+    FORMAT DE RÉPONSE block and it worked for a season -- and the real safety
+    is ``clamp_zone_plan`` / ``clamp_rain_threshold``, not the schema.
+
+    ``enabled`` is offered only for seasonal zones. The example carries each
+    zone's *current* values, which doubles as "change as little as possible".
     """
-    fields: dict[str, Any] = {}
-    presets = [preset.value for preset in SchedulePreset]
+    presets = ", ".join(preset.value for preset in SchedulePreset)
+    example: dict[str, Any] = {}
+    bounds: list[str] = []
     for zone in zones.values():
         slug = slugify(zone.spec.name)
-        fields[f"{slug}_duration"] = {
-            "description": (
-                f"{zone.spec.name} run duration, whole minutes, "
-                f"between {zone.spec.min_duration} and {zone.spec.max_duration}"
-            ),
-            # No min/max here: the Anthropic structured-output schema rejects
-            # `minimum`/`maximum` on numbers, and a slider would require them --
-            # hence mode "box". The real bounds are enforced by
-            # planner.clamp_zone_plan; the description carries them for the model.
-            "selector": {"number": {"mode": "box"}},
-        }
-        fields[f"{slug}_schedule"] = {
-            "description": f"{zone.spec.name} watering days",
-            "selector": {"select": {"options": presets}},
-        }
-        fields[f"{slug}_second_run"] = {
-            "description": f"{zone.spec.name} evening run",
-            "selector": {"boolean": {}},
-        }
+        example[f"{slug}_duration"] = zone.duration_minutes
+        example[f"{slug}_schedule"] = zone.schedule.value
+        example[f"{slug}_second_run"] = zone.second_run
         if zone.spec.seasonal:
-            fields[f"{slug}_enabled"] = {
-                "description": f"{zone.spec.name} seasonally enabled",
-                "selector": {"boolean": {}},
-            }
-    fields["rain_threshold"] = {
-        "description": (
-            "Rain probability percent above which runs are skipped, "
-            f"integer between {AI_RAIN_MIN} and {AI_RAIN_MAX}"
-        ),
-        "selector": {"number": {"mode": "box"}},
-    }
-    fields["narrative"] = {
-        "description": "Short reasoning, in French, for the dashboard",
-        "selector": {"text": {"multiline": True}},
-    }
-    return fields
+            example[f"{slug}_enabled"] = zone.enabled
+        bounds.append(
+            f"{slug}_duration: {zone.spec.min_duration}-{zone.spec.max_duration}"
+        )
+    example["rain_threshold"] = 65
+    example["narrative"] = "explication courte du raisonnement"
+    return (
+        "FORMAT DE RÉPONSE: réponds UNIQUEMENT avec un objet JSON brut sur une "
+        "seule ligne, sans balises markdown, avec exactement ces clés:\n"
+        f"{json.dumps(example, ensure_ascii=False)}\n"
+        f"Valeurs *_schedule autorisées: {presets}. "
+        f"Durées: minutes entières ({'; '.join(bounds)}). "
+        f"rain_threshold: entier {AI_RAIN_MIN}-{AI_RAIN_MAX}."
+    )
+
+
+def parse_plan(data: Any) -> dict[str, Any]:
+    """
+    Parse the model's reply into a dict, tolerating markdown fences.
+
+    Accepts an already-structured dict or raw JSON text (the model sometimes
+    wraps it in ```json fences despite the instructions -- the YAML package
+    stripped them too). Raises on anything else; the caller degrades to
+    yesterday's plan.
+    """
+    if isinstance(data, str):
+        text = data.replace("```json", "").replace("```", "").strip()
+        data = json.loads(text)
+    if not isinstance(data, dict):
+        msg = f"AI plan is not a JSON object: {data!r}"
+        raise TypeError(msg)
+    return data
 
 
 class IrrigationAI:
@@ -192,6 +204,8 @@ class IrrigationAI:
             self._entry.runtime_data.scheduler.recompute_start_times()
 
     async def _async_request_plan(self) -> dict[str, Any]:
+        # No `structure` parameter: see build_response_format. The format is
+        # part of the instructions and the reply is parsed leniently.
         forecast = await self._async_forecast()
         instructions = self._build_instructions(forecast)
         response = await self._hass.services.async_call(
@@ -201,16 +215,11 @@ class IrrigationAI:
                 "task_name": "irrigation_daily_check",
                 "entity_id": self._ai_task_entity,
                 "instructions": instructions,
-                "structure": build_structure(self._zones),
             },
             blocking=True,
             return_response=True,
         )
-        data = (response or {}).get("data")
-        if not isinstance(data, dict):
-            msg = f"ai_task returned no structured data: {response!r}"
-            raise TypeError(msg)
-        return data
+        return parse_plan((response or {}).get("data"))
 
     def _apply_plan(self, raw: Mapping[str, Any]) -> list[str]:
         """
@@ -330,6 +339,8 @@ class IrrigationAI:
             "facteur 5, n'ajuste jamais uniformement toutes les zones. Le seuil "
             "de pluie est un entier 50-90."
         )
+        lines.append("")
+        lines.append(build_response_format(self._zones))
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
