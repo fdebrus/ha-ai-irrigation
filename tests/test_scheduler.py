@@ -368,9 +368,7 @@ async def test_no_flow_clears_when_the_pump_reports_flow(
     await sched.async_shutdown()
 
 
-async def test_no_flow_clears_when_the_zone_stops(
-    hass: HomeAssistant, freezer
-) -> None:
+async def test_no_flow_clears_when_the_zone_stops(hass: HomeAssistant, freezer) -> None:
     """Stopping the last running zone clears the flag immediately."""
     freezer.move_to("2026-07-27 06:00:00+00:00")
     zones = {"z1": _valve_zone("z1")}

@@ -200,9 +200,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
     # Started after platforms so restored entity values are already in place.
     await scheduler.async_start()
 
-    ai = IrrigationAI(
-        hass, entry, entry.data.get(CONF_AI_TASK_ENTITY), weather_entity
-    )
+    ai = IrrigationAI(hass, entry, entry.data.get(CONF_AI_TASK_ENTITY), weather_entity)
     entry.runtime_data.ai = ai
     await ai.async_start()
 
