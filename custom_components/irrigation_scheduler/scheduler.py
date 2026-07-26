@@ -68,6 +68,8 @@ _RAINING_STATES: frozenset[str] = frozenset({"rainy", "pouring"})
 _SELF_DRIVEN_TTL = 5
 # Repair issue id for the pump running dry under an open zone.
 _NO_FLOW_ISSUE = "pump_no_flow"
+# Repair issue id prefix for a zone whose configured hardware entity is gone.
+_MISSING_ENTITY_ISSUE = "zone_entity_missing"
 
 
 class IrrigationScheduler:
@@ -99,6 +101,8 @@ class IrrigationScheduler:
         self._self_driven_timers: dict[str, TimerHandle | None] = {}
         # Set by the pump watchdog; read by the no-flow binary sensor.
         self.no_flow = False
+        # Zone ids currently flagged with a missing-entity repair issue.
+        self._missing_entities: set[str] = set()
 
     def set_drivers(self, drivers: dict[str, Driver]) -> None:
         """Attach the per-zone drivers."""
@@ -203,6 +207,7 @@ class IrrigationScheduler:
         rain = self.coordinator.data if self.coordinator else None
         raining = self._raining_now()
         self._evaluate_no_flow()
+        self._check_missing_entities()
         for zone_id, zone in self.zones.items():
             if not self.hub.master_enabled:
                 zone.last_skipped_reason = "master_off"
@@ -282,6 +287,46 @@ class IrrigationScheduler:
         else:
             ir.async_delete_issue(self.hass, DOMAIN, _NO_FLOW_ISSUE)
         self._notify()
+
+    # ------------------------------------------------------------------
+    # Missing hardware entities
+    # ------------------------------------------------------------------
+    @callback
+    def _check_missing_entities(self) -> None:
+        """
+        Raise a repair issue for any zone whose configured entity is gone.
+
+        A valve renamed or removed in Home Assistant leaves the service call
+        silently doing nothing, so surface it instead. One issue per zone;
+        cleared when every configured entity for the zone exists again.
+        """
+        for zone_id, zone in self.zones.items():
+            driver = self.drivers.get(zone_id)
+            required = driver.required_entities if driver is not None else []
+            missing = [eid for eid in required if self.hass.states.get(eid) is None]
+            issue_id = f"{_MISSING_ENTITY_ISSUE}_{zone_id}"
+            if missing and zone_id not in self._missing_entities:
+                self._missing_entities.add(zone_id)
+                _LOGGER.warning(
+                    "Zone %s references missing entities: %s",
+                    zone.spec.name,
+                    ", ".join(missing),
+                )
+                ir.async_create_issue(
+                    self.hass,
+                    DOMAIN,
+                    issue_id,
+                    is_fixable=False,
+                    severity=ir.IssueSeverity.ERROR,
+                    translation_key=_MISSING_ENTITY_ISSUE,
+                    translation_placeholders={
+                        "zone": zone.spec.name,
+                        "entity": ", ".join(missing),
+                    },
+                )
+            elif not missing and zone_id in self._missing_entities:
+                self._missing_entities.discard(zone_id)
+                ir.async_delete_issue(self.hass, DOMAIN, issue_id)
 
     # ------------------------------------------------------------------
     # Run control -- one pump, one zone at a time (invariant 2)

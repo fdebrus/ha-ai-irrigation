@@ -243,6 +243,10 @@
     "pump_no_flow": {
       "title": "Pump reports no flow",
       "description": "A zone has been running for several minutes but the pump sensor ({sensor}) still reads off. Check the pump, its power and the sensor — the zone may not be getting any water."
+    },
+    "zone_entity_missing": {
+      "title": "Zone {zone} is missing an entity",
+      "description": "Zone {zone} is configured to use {entity}, which no longer exists in Home Assistant. It was probably renamed or removed. Reconfigure the zone to point at the current entity, or the zone cannot run."
     }
   }
 }

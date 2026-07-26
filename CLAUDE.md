@@ -179,7 +179,10 @@ To build, in order:
    Membership is by the tracked run, so Gazon (a button zone with no valve to
    watch) still counts as running. Inert when no pump sensor is configured.
    Covered in `tests/test_scheduler.py`.
-6. **Repair issues** when a zone's configured entity disappears.
+6. ~~**Repair issues.**~~ **Done.** Each driver exposes `required_entities`; the
+   scheduler checks them every tick and raises a per-zone `zone_entity_missing`
+   repair issue when a configured valve/button no longer exists in HA, clearing
+   it when the entity returns. Covered in `tests/test_scheduler.py`.
 7. **Quality scale.** Add `"quality_scale": "silver"` to `manifest.json` and
    fix what hassfest then demands.
 

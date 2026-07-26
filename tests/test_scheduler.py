@@ -12,10 +12,12 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from homeassistant.const import ATTR_ENTITY_ID
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.irrigation_scheduler.const import (
+    DOMAIN,
     STORAGE_KEY,
     STORAGE_VERSION,
 )
@@ -401,4 +403,28 @@ async def test_no_flow_inert_without_a_pump_sensor(
     freezer.tick(timedelta(minutes=10))
     await _fire_tick(hass)
     assert not sched.no_flow
+    await sched.async_shutdown()
+
+
+# --- missing hardware entities (item 6) ------------------------------------
+async def test_missing_zone_entity_raises_and_clears_a_repair_issue(
+    hass: HomeAssistant, freezer
+) -> None:
+    """A configured valve that does not exist raises a repair issue."""
+    freezer.move_to("2026-07-27 06:00:00+00:00")
+    zones = {"z1": _valve_zone("z1")}
+    _wire(hass)
+    # valve.z1 is deliberately never given a state.
+    sched = _make(hass, zones)
+    await sched.async_start()
+
+    await _fire_tick(hass)
+    registry = ir.async_get(hass)
+    assert registry.async_get_issue(DOMAIN, "zone_entity_missing_z1") is not None
+
+    # The entity appears -> the issue clears on the next tick.
+    hass.states.async_set("valve.z1", "closed")
+    freezer.tick(timedelta(minutes=1))
+    await _fire_tick(hass)
+    assert registry.async_get_issue(DOMAIN, "zone_entity_missing_z1") is None
     await sched.async_shutdown()

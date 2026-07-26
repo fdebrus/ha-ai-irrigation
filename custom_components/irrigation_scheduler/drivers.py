@@ -71,6 +71,11 @@ class Driver:
         """Entity the adoption listener should watch, or None (button zones)."""
         return None
 
+    @property
+    def required_entities(self) -> list[str]:
+        """The hardware entities this driver cannot run without."""
+        return []
+
 
 async def _set_valve(
     hass: HomeAssistant,
@@ -136,6 +141,11 @@ class ValveDriver(Driver):
         """Return the valve entity to watch for adoption."""
         return self._entity_id
 
+    @property
+    def required_entities(self) -> list[str]:
+        """Return the single valve/switch entity."""
+        return [self._entity_id]
+
 
 class ButtonDriver(Driver):
     """Start/stop buttons with no state feedback (Aiper IrriSense)."""
@@ -165,6 +175,11 @@ class ButtonDriver(Driver):
     def is_open(self) -> bool | None:
         """Return None: a button zone has no readable state."""
         return None
+
+    @property
+    def required_entities(self) -> list[str]:
+        """Return the start and stop button entities."""
+        return [self._start_button, self._stop_button]
 
 
 class DistributorDriver(Driver):
@@ -243,3 +258,8 @@ class DistributorDriver(Driver):
     def watched_entity(self) -> str | None:
         """Return the shared valve entity to watch for adoption."""
         return self._valve_entity
+
+    @property
+    def required_entities(self) -> list[str]:
+        """Return the shared valve entity."""
+        return [self._valve_entity]
