@@ -85,8 +85,8 @@ timers without a strong reason.
 ## Dev loop
 
 ```bash
-# One-off
-pip install -r requirements.test.txt
+# One-off (pytest + pytest-homeassistant-custom-component live here now)
+pip install -r requirements_dev.txt
 
 # Tests (pure logic runs without HA; the rest uses pytest-homeassistant-custom-component)
 pytest -q
