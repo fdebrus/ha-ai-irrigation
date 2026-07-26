@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from typing import TYPE_CHECKING
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -10,19 +10,24 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import PERCENTAGE
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
-from . import IrrigationConfigEntry
 from .coordinator import RainCoordinator
 from .entity import IrrigationHubEntity, IrrigationZoneEntity
-from .models import ZoneRuntime
+
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from homeassistant.core import HomeAssistant
+    from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+
+    from . import IrrigationConfigEntry
+    from .models import HubRuntime, ZoneRuntime
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,
+    _hass: HomeAssistant,
     entry: IrrigationConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
@@ -113,7 +118,9 @@ class RainProbabilitySensor(
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:weather-pouring"
 
-    def __init__(self, hub, entry_id: str, coordinator: RainCoordinator) -> None:
+    def __init__(
+        self, hub: HubRuntime, entry_id: str, coordinator: RainCoordinator
+    ) -> None:
         """Initialise."""
         CoordinatorEntity.__init__(self, coordinator)
         IrrigationHubEntity.__init__(self, hub, entry_id, "rain_probability")

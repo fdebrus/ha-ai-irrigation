@@ -4,21 +4,27 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
+from typing import TYPE_CHECKING
 
 from homeassistant.components.weather import (
     DOMAIN as WEATHER_DOMAIN,
+)
+from homeassistant.components.weather import (
     SERVICE_GET_FORECASTS,
 )
-from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN, FORECAST_UPDATE_INTERVAL_MIN
+
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class RainCoordinator(DataUpdateCoordinator[float | None]):
-    """Fetch today's precipitation probability from a weather entity.
+    """
+    Fetch today's precipitation probability from a weather entity.
 
     ``data`` is the probability in percent, or ``None`` when the forecast is
     unavailable. ``None`` must never be treated as "0% chance of rain" -- the
@@ -46,8 +52,9 @@ class RainCoordinator(DataUpdateCoordinator[float | None]):
                 blocking=True,
                 return_response=True,
             )
-        except Exception as err:  # noqa: BLE001 - surfaced as UpdateFailed
-            raise UpdateFailed(f"Forecast call failed: {err}") from err
+        except Exception as err:
+            msg = f"Forecast call failed: {err}"
+            raise UpdateFailed(msg) from err
 
         forecasts = (response or {}).get(self.weather_entity_id, {}).get("forecast")
         if not forecasts:

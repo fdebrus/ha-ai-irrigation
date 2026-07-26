@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
@@ -110,14 +109,14 @@ class IrrigationConfigFlow(ConfigFlow, domain=DOMAIN):
     @classmethod
     @callback
     def async_get_supported_subentry_types(
-        cls, config_entry: ConfigEntry
+        cls, _config_entry: ConfigEntry
     ) -> dict[str, type[ConfigSubentryFlow]]:
         """Zones are subentries of the hub."""
         return {SUBENTRY_TYPE_ZONE: ZoneSubentryFlowHandler}
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+    def async_get_options_flow(_config_entry: ConfigEntry) -> OptionsFlow:
         """Allow changing the weather entity later."""
         return IrrigationOptionsFlow()
 

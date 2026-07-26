@@ -1,4 +1,5 @@
-"""Unit tests for the scheduling decision.
+"""
+Unit tests for the scheduling decision.
 
 These do not need Home Assistant running -- `should_start` is pure. New
 scheduling rules belong in models.py so they can be tested here.

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
 
 from .const import DOMAIN, SIGNAL_ZONE_UPDATED
-from .models import HubRuntime, ZoneRuntime
+
+if TYPE_CHECKING:
+    from .models import HubRuntime, ZoneRuntime
 
 
 class IrrigationBaseEntity(Entity):

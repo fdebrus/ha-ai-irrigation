@@ -2,29 +2,32 @@
 
 from __future__ import annotations
 
-from datetime import time as dt_time
+from typing import TYPE_CHECKING
 
 from homeassistant.components.time import TimeEntity
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
-from . import IrrigationConfigEntry
 from .entity import IrrigationZoneEntity
-from .models import ZoneRuntime
+
+if TYPE_CHECKING:
+    from datetime import time as dt_time
+
+    from homeassistant.core import HomeAssistant
+    from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+
+    from . import IrrigationConfigEntry
+    from .models import ZoneRuntime
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,
+    _hass: HomeAssistant,
     entry: IrrigationConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the start-time entities."""
     for subentry_id, zone in entry.runtime_data.zones.items():
-        async_add_entities(
-            [ZoneStartTime(zone)], config_subentry_id=subentry_id
-        )
+        async_add_entities([ZoneStartTime(zone)], config_subentry_id=subentry_id)
 
 
 class ZoneStartTime(IrrigationZoneEntity, TimeEntity, RestoreEntity):

@@ -1,4 +1,5 @@
-"""Runtime models for the Irrigation Scheduler.
+"""
+Runtime models for the Irrigation Scheduler.
 
 The dataclasses here are the single source of truth at runtime. Subentry data
 supplies the *initial* values only; once entities exist, the entities own the
@@ -49,7 +50,8 @@ class ZoneRuntime:
         return self.running_until is not None
 
     def next_run(self, now: datetime) -> datetime | None:
-        """Return the next scheduled start, or None if the zone never runs.
+        """
+        Return the next scheduled start, or None if the zone never runs.
 
         Purely calendar-based: it ignores the master switch and the rain skip,
         because those are evaluated at fire time, not now.
@@ -80,13 +82,14 @@ class HubRuntime:
     rain_threshold: int = DEFAULT_RAIN_THRESHOLD
 
 
-def should_start(
+def should_start(  # noqa: PLR0911 - guard clauses are the design; see CLAUDE.md invariant 6
     zone: ZoneRuntime,
     hub: HubRuntime,
     now: datetime,
     rain_probability: float | None,
 ) -> tuple[bool, str | None]:
-    """Decide whether ``zone`` should start right now.
+    """
+    Decide whether ``zone`` should start right now.
 
     Returns ``(start, skip_reason)``. This function is deliberately pure so it
     can be unit tested without spinning up Home Assistant -- put new scheduling

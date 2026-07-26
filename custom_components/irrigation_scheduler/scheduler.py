@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 
 from homeassistant.const import (
     ATTR_ENTITY_ID,
@@ -14,7 +15,13 @@ from homeassistant.const import (
     STATE_OPEN,
     STATE_OPENING,
 )
-from homeassistant.core import CALLBACK_TYPE, Event, EventStateChangedData, HomeAssistant, callback
+from homeassistant.core import (
+    CALLBACK_TYPE,
+    Event,
+    EventStateChangedData,
+    HomeAssistant,
+    callback,
+)
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import (
     async_track_point_in_utc_time,
@@ -32,8 +39,10 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
 )
-from .coordinator import RainCoordinator
 from .models import HubRuntime, ZoneRuntime, should_start
+
+if TYPE_CHECKING:
+    from .coordinator import RainCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -94,7 +103,8 @@ class IrrigationScheduler:
     # Persistence
     # ------------------------------------------------------------------
     async def _async_restore_runs(self) -> None:
-        """Re-arm or close out runs that were live when HA went down.
+        """
+        Re-arm or close out runs that were live when HA went down.
 
         This is the whole reason the integration exists rather than the YAML
         package: without it, a restart mid-run leaves a valve open forever.
@@ -116,9 +126,7 @@ class IrrigationScheduler:
                 zone.running_until = ends_at
                 await self.async_stop_zone(zone_id)
             else:
-                _LOGGER.info(
-                    "Resuming zone %s, %s remaining", zone.name, ends_at - now
-                )
+                _LOGGER.info("Resuming zone %s, %s remaining", zone.name, ends_at - now)
                 zone.running_until = ends_at
                 self._arm_stop(zone_id, ends_at)
         self._notify()
@@ -223,7 +231,9 @@ class IrrigationScheduler:
             service = "open_valve" if open_valve else "close_valve"
         else:
             # switch, input_boolean, light, ... all take turn_on/turn_off.
-            domain = domain if domain in ("switch", "input_boolean") else "homeassistant"
+            domain = (
+                domain if domain in ("switch", "input_boolean") else "homeassistant"
+            )
             service = SERVICE_TURN_ON if open_valve else SERVICE_TURN_OFF
 
         self._self_driven.add(entity_id)
@@ -236,7 +246,8 @@ class IrrigationScheduler:
 
     @callback
     def _async_valve_changed(self, event: Event[EventStateChangedData]) -> None:
-        """Adopt (or ignore) a valve that was opened outside the integration.
+        """
+        Adopt (or ignore) a valve that was opened outside the integration.
 
         The old YAML package did this implicitly for every zone, which is what
         made the HomeKit runs look like they were being closed by the device.

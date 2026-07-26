@@ -2,25 +2,30 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import voluptuous as vol
-
 from homeassistant.components.button import ButtonEntity
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import config_validation as cv, entity_platform
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_platform
 
-from . import IrrigationConfigEntry
 from .const import MAX_DURATION_MIN, MIN_DURATION_MIN, SOURCE_MANUAL
 from .entity import IrrigationHubEntity, IrrigationZoneEntity
-from .models import HubRuntime, ZoneRuntime
-from .scheduler import IrrigationScheduler
+
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
+    from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+
+    from . import IrrigationConfigEntry
+    from .models import HubRuntime, ZoneRuntime
+    from .scheduler import IrrigationScheduler
 
 SERVICE_RUN_ZONE = "run_zone"
 SERVICE_STOP_ZONE = "stop_zone"
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,
+    _hass: HomeAssistant,
     entry: IrrigationConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:

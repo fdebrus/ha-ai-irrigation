@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
+import contextlib
+from typing import TYPE_CHECKING
+
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.const import PERCENTAGE, UnitOfTime
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from . import IrrigationConfigEntry
 from .const import MAX_DURATION_MIN, MIN_DURATION_MIN
 from .entity import IrrigationHubEntity, IrrigationZoneEntity
-from .models import HubRuntime, ZoneRuntime
+
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
+    from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+
+    from . import IrrigationConfigEntry
+    from .models import HubRuntime, ZoneRuntime
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,
+    _hass: HomeAssistant,
     entry: IrrigationConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
@@ -23,9 +29,7 @@ async def async_setup_entry(
     data = entry.runtime_data
     async_add_entities([RainThresholdNumber(data.hub, entry.entry_id)])
     for subentry_id, zone in data.zones.items():
-        async_add_entities(
-            [ZoneDurationNumber(zone)], config_subentry_id=subentry_id
-        )
+        async_add_entities([ZoneDurationNumber(zone)], config_subentry_id=subentry_id)
 
 
 class _RestoringNumber(NumberEntity, RestoreEntity):
@@ -38,10 +42,8 @@ class _RestoringNumber(NumberEntity, RestoreEntity):
         await super().async_added_to_hass()
         last = await self.async_get_last_state()
         if last is not None and last.state not in (None, "unknown", "unavailable"):
-            try:
+            with contextlib.suppress(ValueError):
                 self._apply(float(last.state))
-            except ValueError:
-                pass
 
     def _apply(self, value: float) -> None:
         raise NotImplementedError
