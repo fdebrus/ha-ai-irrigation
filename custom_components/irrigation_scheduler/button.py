@@ -27,6 +27,11 @@ SERVICE_RUN_ZONE = "run_zone"
 SERVICE_STOP_ZONE = "stop_zone"
 
 
+# All entities read shared runtime_data and push via the dispatcher;
+# there is no per-entity I/O to serialise.
+PARALLEL_UPDATES = 0
+
+
 async def async_setup_entry(
     _hass: HomeAssistant,
     entry: IrrigationConfigEntry,

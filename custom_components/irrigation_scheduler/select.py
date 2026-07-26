@@ -18,6 +18,11 @@ if TYPE_CHECKING:
     from .models import ZoneState
 
 
+# All entities read shared runtime_data and push via the dispatcher;
+# there is no per-entity I/O to serialise.
+PARALLEL_UPDATES = 0
+
+
 async def async_setup_entry(
     _hass: HomeAssistant,
     entry: IrrigationConfigEntry,

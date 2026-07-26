@@ -146,8 +146,10 @@ Verify before a PR: `pytest`, `ruff`, then the `hassfest` and `hacs` workflows.
 
 ## Current state
 
-Done: pure domain model and planner with tests (occupancy for all three driver
-types, sequencing, overlap detection, AI clamping).
+The rebuild is complete: all seven items below are done. The pure domain model
+and planner carry the tested logic (occupancy for all three driver types,
+sequencing, overlap detection, AI clamping); the rest is the I/O shell around
+them.
 
 1. ~~**Drivers + scheduler.**~~ **Done.** `drivers.py` (Valve/Distributor/Button)
    behind one interface; `scheduler.py` fires derived slots, runs/stops through
@@ -170,8 +172,6 @@ types, sequencing, overlap detection, AI clamping).
    may not toggle, a running zone), the overlap rollback, and a failing
    `ai_task` service.
 
-To build, in order:
-
 5. ~~**Pump watchdog.**~~ **Done.** The scheduler evaluates flow on every tick
    (and on stop): a zone open past `NO_FLOW_GRACE_MINUTES` with the configured
    pump sensor still off sets `scheduler.no_flow` and raises the `pump_no_flow`
@@ -183,8 +183,11 @@ To build, in order:
    scheduler checks them every tick and raises a per-zone `zone_entity_missing`
    repair issue when a configured valve/button no longer exists in HA, clearing
    it when the entity returns. Covered in `tests/test_scheduler.py`.
-7. **Quality scale.** Add `"quality_scale": "silver"` to `manifest.json` and
-   fix what hassfest then demands.
+7. ~~**Quality scale.**~~ **Done.** `manifest.json` declares
+   `"quality_scale": "silver"`; every platform sets `PARALLEL_UPDATES = 0`
+   (all entities are local push over the dispatcher), unique ids are set on
+   every entity, the hub entry is single-instance (`already_configured`), and
+   unavailability is surfaced via the no-flow and missing-entity repair issues.
 
 ## Migrating from the YAML package
 
