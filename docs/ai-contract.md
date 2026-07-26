@@ -34,8 +34,11 @@ garden changed.
 6. **Change-minimally instruction.** If the current plan is fine, return it
    unchanged.
 
-Keep the operator persona and the French output — the narrative is read on a
-French dashboard.
+Keep the operator persona. The narrative is requested in the Home Assistant
+configured language (`hass.config.language`), so a French installation gets a
+French narrative and any other locale gets its own — nothing about the garden's
+country is hardcoded in the prompt; the location comes from
+`hass.config.location_name`.
 
 ## Response schema
 
@@ -59,7 +62,7 @@ One group of keys per zone slug, flat rather than nested:
 <slug>_second_run    boolean
 <slug>_enabled       boolean — ONLY for zones flagged seasonal
 rain_threshold       integer, 50-90
-narrative            string, French
+narrative            string, in the HA configured language
 ```
 
 The example object in the format block carries each zone's *current* values,

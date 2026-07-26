@@ -91,16 +91,26 @@ async def test_instructions_carry_current_settings_and_rules(hass: HomeAssistant
     ai, hub = _make_ai(hass, zones)
     text = ai._build_instructions(forecast=[])
     # Current settings per zone, so "change as little as possible" has a basis.
-    assert "soir on" in text  # Jardin's 2nd run state
-    assert "ACTUELLEMENT DESACTIVEE" in text  # Gazon is off
-    assert f"Seuil rain-skip actuel: {hub.rain_threshold}%" in text
+    assert "evening on" in text  # Jardin's 2nd run state
+    assert "CURRENTLY DISABLED" in text  # Gazon is off
+    assert f"Current rain-skip threshold: {hub.rain_threshold}%" in text
     # The regime rules that drive per-zone duration changes.
-    assert "Ajuste les DUREES par zone" in text
-    assert "Canicule" in text
-    assert "borne haute" in text
-    assert "facteur 5" in text
+    assert "Adjust DURATIONS per zone" in text
+    assert "Heat wave" in text
+    assert "upper bound" in text
+    assert "factor of 5" in text
     # The format block closes the prompt.
-    assert "FORMAT DE RÉPONSE" in text
+    assert "RESPONSE FORMAT" in text
+
+
+async def test_instructions_carry_no_hardcoded_locale(hass: HomeAssistant):
+    """The prompt is location- and language-neutral (worldwide integration)."""
+    ai, _ = _make_ai(hass, _garden())
+    text = ai._build_instructions(forecast=[])
+    for locale_specific in ("belge", "Belgium", "Waterloo", "citerne"):
+        assert locale_specific not in text
+    # The narrative language follows the HA configuration.
+    assert f'Write "narrative" in this language: {hass.config.language}' in text
 
 
 # --- parse_plan: lenient like the YAML package was --------------------------

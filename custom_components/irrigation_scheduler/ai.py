@@ -57,7 +57,7 @@ _OVERLAP_ISSUE = "ai_plan_overlap"
 _FORECAST_DAYS = 5
 
 
-def build_response_format(zones: Mapping[str, ZoneState]) -> str:
+def build_response_format(zones: Mapping[str, ZoneState], language: str = "en") -> str:
     """
     Describe the exact JSON reply expected, built from the configured zones.
 
@@ -66,11 +66,13 @@ def build_response_format(zones: Mapping[str, ZoneState]) -> str:
     endpoint rejected the generated schema twice in production (first
     ``minimum``/``maximum`` on numbers, then "Schema is too complex" from the
     five 6-value schedule enums). The reference YAML package always used a
-    FORMAT DE RÉPONSE block and it worked for a season -- and the real safety
+    response-format block and it worked for a season -- and the real safety
     is ``clamp_zone_plan`` / ``clamp_rain_threshold``, not the schema.
 
     ``enabled`` is offered only for seasonal zones. The example carries each
     zone's *current* values, which doubles as "change as little as possible".
+    The narrative is requested in ``language`` -- the Home Assistant configured
+    language -- so the dashboard reads naturally wherever the garden is.
     """
     presets = ", ".join(preset.value for preset in SchedulePreset)
     example: dict[str, Any] = {}
@@ -86,14 +88,15 @@ def build_response_format(zones: Mapping[str, ZoneState]) -> str:
             f"{slug}_duration: {zone.spec.min_duration}-{zone.spec.max_duration}"
         )
     example["rain_threshold"] = 65
-    example["narrative"] = "explication courte du raisonnement"
+    example["narrative"] = "short reasoning for the dashboard"
     return (
-        "FORMAT DE RÉPONSE: réponds UNIQUEMENT avec un objet JSON brut sur une "
-        "seule ligne, sans balises markdown, avec exactement ces clés:\n"
+        "RESPONSE FORMAT: reply ONLY with a raw single-line JSON object, no "
+        "markdown fences, with exactly these keys:\n"
         f"{json.dumps(example, ensure_ascii=False)}\n"
-        f"Valeurs *_schedule autorisées: {presets}. "
-        f"Durées: minutes entières ({'; '.join(bounds)}). "
-        f"rain_threshold: entier {AI_RAIN_MIN}-{AI_RAIN_MAX}."
+        f"Allowed *_schedule values: {presets}. "
+        f"Durations: whole minutes ({'; '.join(bounds)}). "
+        f"rain_threshold: integer {AI_RAIN_MIN}-{AI_RAIN_MAX}. "
+        f'Write "narrative" in this language: {language}.'
     )
 
 
@@ -305,69 +308,69 @@ class IrrigationAI:
 
     def _build_instructions(self, forecast: list[dict[str, Any]]) -> str:
         location = self._hass.config.location_name or "the garden"
-        today = dt_util.now().strftime("%d/%m/%Y")
+        language = self._hass.config.language or "en"
+        today = dt_util.now().strftime("%Y-%m-%d")
         lines = [
-            f"Tu es le regisseur d'arrosage d'un jardin ({location}).",
-            f"Nous sommes le {today}. Propose le plan pour DEMAIN.",
-            "Les heures de depart sont calculees par le systeme -- ne t'en "
-            "occupe pas. Toutes les zones partagent une pompe et ne tournent "
-            "jamais en meme temps.",
+            f"You are the irrigation manager for a garden ({location}).",
+            f"Today is {today}. Propose the plan for TOMORROW.",
+            "Start times are computed by the system -- do not set them. All "
+            "zones share one pump and never run at the same time.",
             "",
-            "Previsions:",
+            "Forecast:",
         ]
         lines.extend(
             f"- {str(day.get('datetime', ''))[:10]}: max "
-            f"{day.get('temperature')}C, pluie "
+            f"{day.get('temperature')}C, rain "
             f"{day.get('precipitation_probability', '?')}%"
             for day in forecast
         )
         lines.append("")
-        lines.append("Zones (reglages ACTUELS):")
+        lines.append("Zones (CURRENT settings):")
         for zone in self._zones.values():
             brief = zone_briefing(zone)
-            seasonal = " [saisonnier: tu decides enabled]" if zone.spec.seasonal else ""
-            state = "" if brief["enabled"] else " ACTUELLEMENT DESACTIVEE,"
+            seasonal = " [seasonal: you decide enabled]" if zone.spec.seasonal else ""
+            state = "" if brief["enabled"] else " CURRENTLY DISABLED,"
             lines.append(
                 f"- {brief['name']}{seasonal}:{state} "
                 f"{brief['duration_minutes']} min, {brief['schedule']}, "
-                f"soir {'on' if brief['second_run'] else 'off'}, "
+                f"evening {'on' if brief['second_run'] else 'off'}, "
                 f"~{brief['litres_per_run']} L/run, "
-                f"bornes {brief['duration_bounds'][0]}-{brief['duration_bounds'][1]} "
+                f"bounds {brief['duration_bounds'][0]}-{brief['duration_bounds'][1]} "
                 f"min | {brief['description']}"
             )
         lines.append(
-            f"Seuil rain-skip actuel: {self._hub.rain_threshold}% (l'arrosage "
-            "est saute au moment du run si la proba de pluie depasse ce seuil "
-            "-- mecanisme temps reel, ne gere pas les skips toi-meme)."
+            f"Current rain-skip threshold: {self._hub.rain_threshold}% (a run "
+            "is skipped at start time when the rain probability exceeds it -- "
+            "a real-time mechanism, do not handle skips yourself)."
         )
         lines.extend(
             [
                 "",
-                "REGLES:",
-                "- Ajuste les DUREES par zone, pas seulement les jours. Pour "
-                "donner plus d'eau a une zone: monte sa duree vers sa borne "
-                "haute et/ou active son 2nd run (soir). Pour en donner moins: "
-                "baisse la duree vers la borne basse.",
-                "- Canicule (2+ jours consecutifs >= 28C sans pluie "
-                "significative): bacs sureleves et jeunes plantations en Daily "
-                "avec durees adaptees a leur debit, 2nd runs utiles actives; "
-                "zones robustes rallongees plutot que passees en Daily.",
-                "- Temps belge normal (<26C ou pluie reguliere): regimes de "
-                "base, tous les 2nd runs off.",
-                "- Pluie abondante prevue (>70% plusieurs jours): durees "
-                "reduites, le rain-skip automatique fait le reste.",
-                "- rain_threshold: canicule seche avec bacs abrites 80-85 "
-                "(eviter les faux skips); temps changeant 60-65; periode tres "
-                "pluvieuse 50-55 (economiser la citerne).",
-                "- Raisonne en litres delivres; les debits par minute varient "
-                "d'un facteur 5, n'ajuste jamais uniformement toutes les "
-                "zones.",
-                "- Change le moins possible: si le plan actuel convient, "
-                "renvoie-le tel quel.",
+                "RULES:",
+                "- Adjust DURATIONS per zone, not only the days. To give a "
+                "zone more water: raise its duration toward its upper bound "
+                "and/or enable its evening run. To give less: lower it toward "
+                "the bottom bound.",
+                "- Heat wave (2+ consecutive days >= 28C without significant "
+                "rain): raised beds and young plantings go daily with "
+                "durations adapted to their flow, useful evening runs on; "
+                "robust zones are lengthened rather than moved to daily.",
+                "- Normal weather for the region (<26C or regular rain): base "
+                "regimes, all evening runs off.",
+                "- Heavy rain expected (>70% over several days): reduced "
+                "durations, the automatic rain skip does the rest.",
+                "- rain_threshold: dry heat wave with sheltered beds 80-85 "
+                "(avoid false skips); changeable weather 60-65; very rainy "
+                "spell 50-55 (save water).",
+                "- Reason in litres delivered; per-minute flow rates differ "
+                "by a factor of 5 between zones, never adjust all zones "
+                "uniformly.",
+                "- Change as little as possible: if the current plan fits, "
+                "return it unchanged.",
             ]
         )
         lines.append("")
-        lines.append(build_response_format(self._zones))
+        lines.append(build_response_format(self._zones, language))
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
