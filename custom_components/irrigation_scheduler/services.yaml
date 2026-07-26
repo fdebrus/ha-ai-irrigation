@@ -1,0 +1,21 @@
+run_zone:
+  target:
+    entity:
+      integration: irrigation_scheduler
+      domain: button
+  fields:
+    duration:
+      example: 20
+      selector:
+        number:
+          min: 1
+          max: 120
+          step: 1
+          unit_of_measurement: min
+          mode: box
+
+stop_zone:
+  target:
+    entity:
+      integration: irrigation_scheduler
+      domain: button

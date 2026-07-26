@@ -1,0 +1,116 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Irrigation Scheduler",
+        "description": "Pick the weather entity used for the rain skip. You can leave this empty and add it later; zones are added afterwards from the integration page.",
+        "data": {
+          "weather_entity": "Weather entity"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Irrigation Scheduler is already set up. Add another zone instead."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Irrigation Scheduler",
+        "data": {
+          "weather_entity": "Weather entity"
+        }
+      }
+    }
+  },
+  "config_subentries": {
+    "zone": {
+      "title": "Zone",
+      "initiate_flow": {
+        "user": "Add zone"
+      },
+      "entry_type": "Irrigation zone",
+      "step": {
+        "user": {
+          "title": "Add an irrigation zone",
+          "data": {
+            "name": "Zone name",
+            "valve_entity": "Valve or switch",
+            "default_start": "Start time",
+            "default_duration": "Run duration",
+            "weekdays": "Days",
+            "adopt_manual_runs": "Adopt manual runs"
+          },
+          "data_description": {
+            "adopt_manual_runs": "When on, opening the valve from HomeKit, Google Home or by hand starts a tracked run that the scheduler will close after the configured duration. Leave off if you want manual runs to stay untouched."
+          }
+        },
+        "reconfigure": {
+          "title": "Edit zone",
+          "data": {
+            "name": "Zone name",
+            "valve_entity": "Valve or switch",
+            "default_start": "Start time",
+            "default_duration": "Run duration",
+            "weekdays": "Days",
+            "adopt_manual_runs": "Adopt manual runs"
+          }
+        }
+      }
+    }
+  },
+  "selector": {
+    "weekdays": {
+      "options": {
+        "mon": "Monday",
+        "tue": "Tuesday",
+        "wed": "Wednesday",
+        "thu": "Thursday",
+        "fri": "Friday",
+        "sat": "Saturday",
+        "sun": "Sunday"
+      }
+    }
+  },
+  "entity": {
+    "switch": {
+      "master": { "name": "Master" },
+      "rain_skip": { "name": "Rain skip" },
+      "enabled": { "name": "Enabled" }
+    },
+    "number": {
+      "duration": { "name": "Duration" },
+      "rain_threshold": { "name": "Rain threshold" }
+    },
+    "time": {
+      "start_time": { "name": "Start time" }
+    },
+    "sensor": {
+      "next_run": { "name": "Next run" },
+      "finishes_at": { "name": "Finishes at" },
+      "status": { "name": "Status" },
+      "rain_probability": { "name": "Rain probability" }
+    },
+    "button": {
+      "run_now": { "name": "Run now" },
+      "stop": { "name": "Stop" },
+      "stop_all": { "name": "Stop all" }
+    }
+  },
+  "services": {
+    "run_zone": {
+      "name": "Run zone",
+      "description": "Start a zone immediately.",
+      "fields": {
+        "duration": {
+          "name": "Duration",
+          "description": "Minutes to run. Defaults to the zone's configured duration."
+        }
+      }
+    },
+    "stop_zone": {
+      "name": "Stop zone",
+      "description": "Close a zone's valve and cancel its run."
+    }
+  }
+}

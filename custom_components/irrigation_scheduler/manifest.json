@@ -1,0 +1,13 @@
+{
+  "domain": "irrigation_scheduler",
+  "name": "Irrigation Scheduler",
+  "codeowners": ["@YOUR_GITHUB_HANDLE"],
+  "config_flow": true,
+  "dependencies": ["weather"],
+  "documentation": "https://github.com/YOUR_GITHUB_HANDLE/irrigation-scheduler",
+  "integration_type": "hub",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/YOUR_GITHUB_HANDLE/irrigation-scheduler/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
