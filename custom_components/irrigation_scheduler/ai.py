@@ -66,15 +66,15 @@ def build_structure(zones: Mapping[str, ZoneState]) -> dict[str, Any]:
     for zone in zones.values():
         slug = slugify(zone.spec.name)
         fields[f"{slug}_duration"] = {
-            "description": f"{zone.spec.name} run duration in minutes",
-            "selector": {
-                "number": {
-                    "min": zone.spec.min_duration,
-                    "max": zone.spec.max_duration,
-                    "step": 1,
-                    "mode": "box",
-                }
-            },
+            "description": (
+                f"{zone.spec.name} run duration, whole minutes, "
+                f"between {zone.spec.min_duration} and {zone.spec.max_duration}"
+            ),
+            # No min/max here: the Anthropic structured-output schema rejects
+            # `minimum`/`maximum` on numbers, and a slider would require them --
+            # hence mode "box". The real bounds are enforced by
+            # planner.clamp_zone_plan; the description carries them for the model.
+            "selector": {"number": {"mode": "box"}},
         }
         fields[f"{slug}_schedule"] = {
             "description": f"{zone.spec.name} watering days",
@@ -90,10 +90,11 @@ def build_structure(zones: Mapping[str, ZoneState]) -> dict[str, Any]:
                 "selector": {"boolean": {}},
             }
     fields["rain_threshold"] = {
-        "description": "Rain probability percent above which runs are skipped",
-        "selector": {
-            "number": {"min": AI_RAIN_MIN, "max": AI_RAIN_MAX, "step": 5, "mode": "box"}
-        },
+        "description": (
+            "Rain probability percent above which runs are skipped, "
+            f"integer between {AI_RAIN_MIN} and {AI_RAIN_MAX}"
+        ),
+        "selector": {"number": {"mode": "box"}},
     }
     fields["narrative"] = {
         "description": "Short reasoning, in French, for the dashboard",
