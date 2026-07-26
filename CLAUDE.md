@@ -149,9 +149,12 @@ Known gaps — pick these up in roughly this order:
    (run at start) raises a `valve_missing_<subentry_id>` repair issue when a
    zone's valve is neither registered nor present, and clears it once the valve
    resolves. The registry check tolerates startup load order.
-7. **Quality scale.** `manifest.json` has no `quality_scale` yet. Adding
-   `"quality_scale": "silver"` makes hassfest check for things like unique IDs
-   and unavailability handling.
+7. ~~**Quality scale.**~~ **Done.** `manifest.json` now declares
+   `"quality_scale": "silver"`. The integration already meets the substantive
+   silver bar: every entity has a unique id, the single hub entry is guarded by
+   a unique id, config-entry unload is clean, and valve unavailability is
+   handled (gap 4). The value is a plain manifest string at runtime; the
+   `hassfest`/`hacs` GitHub Actions are the authoritative check.
 
 ## Migrating from the YAML package
 

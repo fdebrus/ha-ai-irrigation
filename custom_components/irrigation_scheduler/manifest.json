@@ -8,6 +8,7 @@
   "integration_type": "hub",
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/fdebrus/ha-ai-irrigation/issues",
+  "quality_scale": "silver",
   "requirements": [],
   "version": "0.1.0"
 }
