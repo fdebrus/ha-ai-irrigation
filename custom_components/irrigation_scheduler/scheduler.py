@@ -154,8 +154,12 @@ class IrrigationScheduler:
         """Fire once a minute at :00 and evaluate every zone."""
         local_now = dt_util.as_local(now)
         rain = self.coordinator.data if self.coordinator else None
+        probability = rain.probability if rain else None
+        precipitation_mm = rain.precipitation_mm if rain else None
         for zone_id, zone in self.zones.items():
-            start, reason = should_start(zone, self.hub, local_now, rain)
+            start, reason = should_start(
+                zone, self.hub, local_now, probability, precipitation_mm
+            )
             if reason is not None:
                 zone.last_skipped_reason = reason
             if not start:

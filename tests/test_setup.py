@@ -52,6 +52,7 @@ HUB_ENTITY_KEYS = {
     "rain_skip",  # switch
     "sequential",  # switch
     "rain_threshold",  # number
+    "rain_mm_threshold",  # number
     "stop_all",  # button
 }
 

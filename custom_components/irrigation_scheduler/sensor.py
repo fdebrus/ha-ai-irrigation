@@ -130,4 +130,4 @@ class RainProbabilitySensor(
     @property
     def native_value(self) -> float | None:
         """Return the probability, or None when no forecast is available."""
-        return self.coordinator.data
+        return self.coordinator.data.probability if self.coordinator.data else None

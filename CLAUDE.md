@@ -139,9 +139,12 @@ Known gaps — pick these up in roughly this order:
    `unavailable` it logs a warning, sets `last_skipped_reason` /status to
    `valve_unavailable`, does not start a phantom run, and releases the next
    queued zone.
-5. **Precipitation in mm.** `RainCoordinator` only reads
-   `precipitation_probability`. Some providers only give `precipitation`; add a
-   fallback threshold in mm.
+5. ~~**Precipitation in mm.**~~ **Done.** `RainCoordinator` now returns a
+   `RainForecast(probability, precipitation_mm)`. `should_start` uses
+   probability when present and falls back to the mm amount otherwise, against a
+   new `rain_mm_threshold` (hub number entity, default 2 mm). A missing
+   probability still never reads as 0% — it defers to mm, and both missing means
+   the zone waters.
 6. **No repair issues.** Use `homeassistant.helpers.issue_registry` when a zone's
    valve entity no longer exists after a rename.
 7. **Quality scale.** `manifest.json` has no `quality_scale` yet. Adding

@@ -15,9 +15,24 @@ from datetime import datetime, time, timedelta
 
 from .const import (
     DEFAULT_DURATION_MIN,
+    DEFAULT_RAIN_MM_THRESHOLD,
     DEFAULT_RAIN_THRESHOLD,
     WEEKDAY_KEYS,
 )
+
+
+@dataclass
+class RainForecast:
+    """
+    Today's rain outlook, as read from the weather forecast.
+
+    ``probability`` is a percentage; ``precipitation_mm`` is the forecast amount
+    in millimetres. Either may be ``None`` when the provider does not expose it.
+    Both ``None`` means "no usable forecast" and must never be read as "dry".
+    """
+
+    probability: float | None = None
+    precipitation_mm: float | None = None
 
 
 @dataclass
@@ -82,6 +97,8 @@ class HubRuntime:
     master_enabled: bool = True
     rain_skip_enabled: bool = True
     rain_threshold: int = DEFAULT_RAIN_THRESHOLD
+    # Fallback skip when only precipitation (mm) is forecast, no probability.
+    rain_mm_threshold: float = DEFAULT_RAIN_MM_THRESHOLD
     # Run overlapping zones one at a time instead of together.
     sequential: bool = False
 
@@ -91,6 +108,7 @@ def should_start(  # noqa: PLR0911 - guard clauses are the design; see CLAUDE.md
     hub: HubRuntime,
     now: datetime,
     rain_probability: float | None,
+    rain_mm: float | None = None,
 ) -> tuple[bool, str | None]:
     """
     Decide whether ``zone`` should start right now.
@@ -98,6 +116,11 @@ def should_start(  # noqa: PLR0911 - guard clauses are the design; see CLAUDE.md
     Returns ``(start, skip_reason)``. This function is deliberately pure so it
     can be unit tested without spinning up Home Assistant -- put new scheduling
     rules here rather than inline in the scheduler tick.
+
+    Rain skip uses probability when the provider gives one; when it does not, it
+    falls back to the forecast amount in mm. A missing probability is never read
+    as 0% -- it just defers to the mm figure, and if that is missing too the
+    zone waters.
     """
     if not hub.master_enabled:
         return False, "master_off"
@@ -111,10 +134,17 @@ def should_start(  # noqa: PLR0911 - guard clauses are the design; see CLAUDE.md
         return False, None
     if zone.last_scheduled_date == now.date().isoformat():
         return False, "already_ran_today"
-    if (
-        hub.rain_skip_enabled
-        and rain_probability is not None
-        and rain_probability >= hub.rain_threshold
-    ):
+    if hub.rain_skip_enabled and _rain_expected(hub, rain_probability, rain_mm):
         return False, "rain_expected"
     return True, None
+
+
+def _rain_expected(
+    hub: HubRuntime, probability: float | None, precipitation_mm: float | None
+) -> bool:
+    """Return True if the forecast crosses the configured rain skip threshold."""
+    if probability is not None:
+        return probability >= hub.rain_threshold
+    if precipitation_mm is not None:
+        return precipitation_mm >= hub.rain_mm_threshold
+    return False

@@ -32,6 +32,10 @@ CONF_ADOPT_MANUAL_RUNS: Final = "adopt_manual_runs"
 DEFAULT_DURATION_MIN: Final = 15
 DEFAULT_START_TIME: Final = "06:00:00"
 DEFAULT_RAIN_THRESHOLD: Final = 60
+DEFAULT_RAIN_MM_THRESHOLD: Final = 2.0
+
+MIN_RAIN_MM_THRESHOLD: Final = 0.0
+MAX_RAIN_MM_THRESHOLD: Final = 25.0
 DEFAULT_WEEKDAYS: Final = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 MIN_DURATION_MIN: Final = 1

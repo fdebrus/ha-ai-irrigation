@@ -88,7 +88,8 @@
     },
     "number": {
       "duration": { "name": "Duration" },
-      "rain_threshold": { "name": "Rain threshold" }
+      "rain_threshold": { "name": "Rain threshold" },
+      "rain_mm_threshold": { "name": "Rain amount threshold" }
     },
     "time": {
       "start_time": { "name": "Start time" }

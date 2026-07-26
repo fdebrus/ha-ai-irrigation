@@ -15,6 +15,7 @@ from homeassistant.components.weather import (
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN, FORECAST_UPDATE_INTERVAL_MIN
+from .models import RainForecast
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -22,13 +23,13 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
-class RainCoordinator(DataUpdateCoordinator[float | None]):
+class RainCoordinator(DataUpdateCoordinator[RainForecast | None]):
     """
-    Fetch today's precipitation probability from a weather entity.
+    Fetch today's rain outlook from a weather entity.
 
-    ``data`` is the probability in percent, or ``None`` when the forecast is
-    unavailable. ``None`` must never be treated as "0% chance of rain" -- the
-    scheduler skips the rain check entirely rather than guessing.
+    ``data`` is a :class:`RainForecast` (probability in percent and/or amount in
+    mm), or ``None`` when no forecast is available. ``None`` must never be
+    treated as "dry" -- the scheduler skips the rain check rather than guessing.
     """
 
     def __init__(self, hass: HomeAssistant, weather_entity_id: str) -> None:
@@ -41,8 +42,8 @@ class RainCoordinator(DataUpdateCoordinator[float | None]):
         )
         self.weather_entity_id = weather_entity_id
 
-    async def _async_update_data(self) -> float | None:
-        """Call weather.get_forecasts and pull out today's rain probability."""
+    async def _async_update_data(self) -> RainForecast | None:
+        """Call weather.get_forecasts and pull out today's rain outlook."""
         try:
             response = await self.hass.services.async_call(
                 WEATHER_DOMAIN,
@@ -61,13 +62,19 @@ class RainCoordinator(DataUpdateCoordinator[float | None]):
             _LOGGER.debug("No daily forecast returned by %s", self.weather_entity_id)
             return None
 
-        # NOTE: not every integration exposes precipitation_probability. Met.no
-        # and AccuWeather do; some national services only give `precipitation`
-        # in mm. If you switch provider, extend this rather than assuming.
-        probability = forecasts[0].get("precipitation_probability")
-        if probability is None:
+        # Not every provider exposes precipitation_probability. Met.no and
+        # AccuWeather do; some national services only give `precipitation` in mm.
+        # Read both and let the scheduler pick probability first, mm as fallback.
+        today = forecasts[0]
+        probability = today.get("precipitation_probability")
+        precipitation = today.get("precipitation")
+        if probability is None and precipitation is None:
             _LOGGER.debug(
-                "%s does not expose precipitation_probability", self.weather_entity_id
+                "%s exposes neither precipitation_probability nor precipitation",
+                self.weather_entity_id,
             )
             return None
-        return float(probability)
+        return RainForecast(
+            probability=None if probability is None else float(probability),
+            precipitation_mm=None if precipitation is None else float(precipitation),
+        )

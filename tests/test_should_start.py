@@ -60,6 +60,24 @@ def test_rain_skip(probability, expected):
     assert start is expected
 
 
+@pytest.mark.parametrize(
+    ("rain_mm", "expected"), [(5.0, False), (0.5, True), (None, True)]
+)
+def test_rain_skip_falls_back_to_mm_when_probability_missing(rain_mm, expected):
+    """With no probability, the mm forecast drives the skip."""
+    hub = HubRuntime(rain_mm_threshold=2.0)
+    start, _ = should_start(make_zone(), hub, MONDAY_0600, None, rain_mm)
+    assert start is expected
+
+
+def test_probability_wins_over_mm_when_both_present():
+    """A present probability is authoritative; mm is only a fallback."""
+    hub = HubRuntime(rain_threshold=60, rain_mm_threshold=2.0)
+    # Dry probability but a wet mm figure: probability wins, so the zone runs.
+    start, _ = should_start(make_zone(), hub, MONDAY_0600, 10.0, 9.0)
+    assert start is True
+
+
 def test_master_off_blocks_everything():
     hub = HubRuntime(master_enabled=False)
     start, reason = should_start(make_zone(), hub, MONDAY_0600, None)

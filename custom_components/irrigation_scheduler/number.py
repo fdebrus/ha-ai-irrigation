@@ -6,10 +6,15 @@ import contextlib
 from typing import TYPE_CHECKING
 
 from homeassistant.components.number import NumberEntity, NumberMode
-from homeassistant.const import PERCENTAGE, UnitOfTime
+from homeassistant.const import PERCENTAGE, UnitOfLength, UnitOfTime
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import MAX_DURATION_MIN, MIN_DURATION_MIN
+from .const import (
+    MAX_DURATION_MIN,
+    MAX_RAIN_MM_THRESHOLD,
+    MIN_DURATION_MIN,
+    MIN_RAIN_MM_THRESHOLD,
+)
 from .entity import IrrigationHubEntity, IrrigationZoneEntity
 
 if TYPE_CHECKING:
@@ -27,7 +32,12 @@ async def async_setup_entry(
 ) -> None:
     """Set up the numbers."""
     data = entry.runtime_data
-    async_add_entities([RainThresholdNumber(data.hub, entry.entry_id)])
+    async_add_entities(
+        [
+            RainThresholdNumber(data.hub, entry.entry_id),
+            RainMmThresholdNumber(data.hub, entry.entry_id),
+        ]
+    )
     for subentry_id, zone in data.zones.items():
         async_add_entities([ZoneDurationNumber(zone)], config_subentry_id=subentry_id)
 
@@ -96,3 +106,25 @@ class RainThresholdNumber(IrrigationHubEntity, _RestoringNumber):
 
     def _apply(self, value: float) -> None:
         self.hub.rain_threshold = int(value)
+
+
+class RainMmThresholdNumber(IrrigationHubEntity, _RestoringNumber):
+    """Rain amount (mm) above which runs are skipped when no probability exists."""
+
+    _attr_native_min_value = MIN_RAIN_MM_THRESHOLD
+    _attr_native_max_value = MAX_RAIN_MM_THRESHOLD
+    _attr_native_step = 0.5
+    _attr_native_unit_of_measurement = UnitOfLength.MILLIMETERS
+    _attr_icon = "mdi:water"
+
+    def __init__(self, hub: HubRuntime, entry_id: str) -> None:
+        """Initialise."""
+        IrrigationHubEntity.__init__(self, hub, entry_id, "rain_mm_threshold")
+
+    @property
+    def native_value(self) -> float:
+        """Return the mm threshold."""
+        return self.hub.rain_mm_threshold
+
+    def _apply(self, value: float) -> None:
+        self.hub.rain_mm_threshold = float(value)
