@@ -46,11 +46,16 @@ from .const import (
 from .models import HubRuntime, ZoneRuntime, should_start
 
 if TYPE_CHECKING:
+    from asyncio import TimerHandle
+
     from .coordinator import RainCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
 VALVE_OPEN_STATES = {STATE_ON, STATE_OPEN, STATE_OPENING}
+
+# Seconds to keep ignoring our own valve command echoing back as a state event.
+_SELF_DRIVEN_TTL = 5
 
 
 class IrrigationScheduler:
@@ -75,6 +80,9 @@ class IrrigationScheduler:
         # Valve entity IDs we are mid-command on, so our own service calls do
         # not come back through the state listener and get adopted.
         self._self_driven: set[str] = set()
+        # Timers that clear _self_driven entries, kept so we can cancel them on
+        # shutdown instead of leaking a pending callback.
+        self._self_driven_timers: dict[str, TimerHandle] = {}
         # Zones waiting their turn in sequential mode: (zone_id, duration, source).
         self._queue: list[tuple[str, int | None, str]] = []
 
@@ -105,6 +113,10 @@ class IrrigationScheduler:
         for unsub in self._unsub_stop.values():
             unsub()
         self._unsub_stop.clear()
+        for timer in self._self_driven_timers.values():
+            timer.cancel()
+        self._self_driven_timers.clear()
+        self._self_driven.clear()
 
     # ------------------------------------------------------------------
     # Persistence
@@ -369,7 +381,11 @@ class IrrigationScheduler:
                 domain, service, {ATTR_ENTITY_ID: entity_id}, blocking=True
             )
         finally:
-            self.hass.loop.call_later(5, self._self_driven.discard, entity_id)
+            if (timer := self._self_driven_timers.pop(entity_id, None)) is not None:
+                timer.cancel()
+            self._self_driven_timers[entity_id] = self.hass.loop.call_later(
+                _SELF_DRIVEN_TTL, self._clear_self_driven, entity_id
+            )
 
     @callback
     def _async_valve_changed(self, event: Event[EventStateChangedData]) -> None:
@@ -409,6 +425,12 @@ class IrrigationScheduler:
             zone.running_source = None
             self.hass.async_create_task(self._async_save())
             self._notify()
+
+    @callback
+    def _clear_self_driven(self, entity_id: str) -> None:
+        """Stop ignoring our own command for an entity once it has settled."""
+        self._self_driven.discard(entity_id)
+        self._self_driven_timers.pop(entity_id, None)
 
     # ------------------------------------------------------------------
     @callback
