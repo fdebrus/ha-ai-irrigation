@@ -160,10 +160,18 @@ types, sequencing, overlap detection, AI clamping).
    binary_sensor; start times are read-only sensors; any duration/enabled/base
    change calls `scheduler.recompute_start_times` → `planner.apply_start_times`.
 
+4. ~~**AI layer.**~~ **Done.** `ai.py` builds the `ai_task` `structure` from the
+   configured zones, requests the nightly plan, and applies it through
+   `planner.clamp_zone_plan` / `clamp_rain_threshold`. Every field falls back to
+   the current value, running zones are deferred, an overlap rolls the plan back
+   and raises a repair issue, and any exception keeps yesterday's plan.
+   `tests/test_ai.py` exercises the malformed responses (missing keys, wrong
+   types, out-of-range durations, unknown schedule, a non-seasonal zone the AI
+   may not toggle, a running zone), the overlap rollback, and a failing
+   `ai_task` service.
+
 To build, in order:
 
-4. **AI layer.** `docs/ai-contract.md` end to end. Test the clamping against
-   real malformed responses, not just happy paths.
 5. **Pump watchdog.** Port the no-flow warning: zone running 3 minutes with
    `binary_sensor.pump_running` off → repair issue. For Gazon, "running" means
    the timer is active, since there is no valve to watch.

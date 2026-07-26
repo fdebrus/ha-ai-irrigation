@@ -82,6 +82,7 @@ DEFAULT_EMITTER_MAX: Final = 4.0
 # --- Storage ---------------------------------------------------------------
 STORAGE_VERSION: Final = 1
 STORAGE_KEY: Final = f"{DOMAIN}.state"
+STORAGE_KEY_PLAN: Final = f"{DOMAIN}.plan"
 
 # --- Dispatcher ------------------------------------------------------------
 SIGNAL_ZONE_UPDATED: Final = f"{DOMAIN}_zone_updated"

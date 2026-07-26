@@ -125,15 +125,29 @@
   },
   "entity": {
     "switch": {
-      "master": { "name": "Master" },
-      "rain_skip": { "name": "Rain skip" },
-      "ai": { "name": "AI plan" },
-      "enabled": { "name": "Enabled" },
-      "second_run": { "name": "Second run" }
+      "master": {
+        "name": "Master"
+      },
+      "rain_skip": {
+        "name": "Rain skip"
+      },
+      "ai": {
+        "name": "AI plan"
+      },
+      "enabled": {
+        "name": "Enabled"
+      },
+      "second_run": {
+        "name": "Second run"
+      }
     },
     "number": {
-      "rain_threshold": { "name": "Rain threshold" },
-      "duration": { "name": "Duration" }
+      "rain_threshold": {
+        "name": "Rain threshold"
+      },
+      "duration": {
+        "name": "Duration"
+      }
     },
     "select": {
       "schedule": {
@@ -149,28 +163,60 @@
       }
     },
     "time": {
-      "morning_base": { "name": "Morning base" },
-      "evening_base": { "name": "Evening base" },
-      "plan_at": { "name": "Plan time" }
+      "morning_base": {
+        "name": "Morning base"
+      },
+      "evening_base": {
+        "name": "Evening base"
+      },
+      "plan_at": {
+        "name": "Plan time"
+      }
     },
     "sensor": {
-      "rain_probability": { "name": "Rain probability" },
-      "daily_plan": { "name": "Daily plan" },
-      "morning_start": { "name": "Morning start" },
-      "evening_start": { "name": "Evening start" },
-      "next_run": { "name": "Next run" },
-      "finishes_at": { "name": "Finishes at" },
-      "status": { "name": "Status" }
+      "rain_probability": {
+        "name": "Rain probability"
+      },
+      "daily_plan": {
+        "name": "Daily plan"
+      },
+      "morning_start": {
+        "name": "Morning start"
+      },
+      "evening_start": {
+        "name": "Evening start"
+      },
+      "next_run": {
+        "name": "Next run"
+      },
+      "finishes_at": {
+        "name": "Finishes at"
+      },
+      "status": {
+        "name": "Status"
+      }
     },
     "button": {
-      "stop_all": { "name": "Stop all" },
-      "plan_now": { "name": "Plan now" },
-      "run_now": { "name": "Run now" },
-      "stop": { "name": "Stop" }
+      "stop_all": {
+        "name": "Stop all"
+      },
+      "plan_now": {
+        "name": "Plan now"
+      },
+      "run_now": {
+        "name": "Run now"
+      },
+      "stop": {
+        "name": "Stop"
+      }
     },
     "binary_sensor": {
-      "overlap": { "name": "Schedule overlap" },
-      "no_flow": { "name": "No flow" }
+      "overlap": {
+        "name": "Schedule overlap"
+      },
+      "no_flow": {
+        "name": "No flow"
+      }
     }
   },
   "services": {
@@ -187,6 +233,12 @@
     "stop_zone": {
       "name": "Stop zone",
       "description": "Stop a zone and cancel its run."
+    }
+  },
+  "issues": {
+    "ai_plan_overlap": {
+      "title": "AI plan created an overlap",
+      "description": "The AI plan would have run two zones on the shared pump at once ({conflicts}). It was rolled back to the previous plan. This is a bug — please report it."
     }
   }
 }

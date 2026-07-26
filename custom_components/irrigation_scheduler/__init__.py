@@ -14,8 +14,10 @@ from typing import TYPE_CHECKING
 
 from homeassistant.util import dt as dt_util
 
+from .ai import IrrigationAI
 from .const import (
     CONF_ADOPT_MANUAL_RUNS,
+    CONF_AI_TASK_ENTITY,
     CONF_DEFAULT_DURATION,
     CONF_DEFAULT_SCHEDULE,
     CONF_DESCRIPTION,
@@ -76,7 +78,7 @@ class IrrigationRuntimeData:
     drivers: dict[str, Driver]
     scheduler: IrrigationScheduler
     coordinator: RainCoordinator | None
-    ai: object | None = None  # IrrigationAI, attached in async_setup_entry (Phase 6)
+    ai: IrrigationAI | None = None
 
 
 type IrrigationConfigEntry = ConfigEntry[IrrigationRuntimeData]
@@ -191,13 +193,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -
     # Started after platforms so restored entity values are already in place.
     await scheduler.async_start()
 
+    ai = IrrigationAI(
+        hass, entry, entry.data.get(CONF_AI_TASK_ENTITY), weather_entity
+    )
+    entry.runtime_data.ai = ai
+    await ai.async_start()
+
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: IrrigationConfigEntry) -> bool:
     """Unload a config entry."""
-    await entry.runtime_data.scheduler.async_shutdown()
+    runtime = entry.runtime_data
+    if runtime.ai is not None:
+        runtime.ai.async_shutdown()
+    await runtime.scheduler.async_shutdown()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
