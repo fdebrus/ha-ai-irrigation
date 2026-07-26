@@ -2,6 +2,10 @@
 
 target-version = "py314"
 
+# brand/ holds image-generation tooling for the HA brand assets, not
+# integration code; keep it out of the integration's lint surface.
+extend-exclude = ["brand"]
+
 [lint]
 select = [
     "ALL",
