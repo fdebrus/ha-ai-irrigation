@@ -1,167 +1,183 @@
 # CLAUDE.md
 
 Working notes for Claude Code on this repo. Read this before changing anything.
+`docs/ai-contract.md` is the companion spec for the AI layer.
 
 ## What this is
 
-A Home Assistant **custom integration** that schedules four garden irrigation
-zones (Jardin, Parking, Entrée, Framboisier). It replaces a YAML package that
-used `input_boolean` / `input_number` / `input_datetime` helpers plus
-automations. It is a *scheduler*, not a device driver: the valves already exist
-in HA and this integration only calls services on them.
+A Home Assistant custom integration that schedules five irrigation zones in a
+garden in Waterloo, Belgium, and adapts them daily using an LLM. It replaces a
+YAML package (`irrigation.yaml` + `irrigation_ai.yaml`) that used `input_*`
+helpers, timers and automations. Both files are in `reference/` — read them
+before implementing anything, they encode a year of hard-won detail.
+
+It is a *scheduler*, not a device driver: the valves, buttons and pump already
+exist in Home Assistant and this integration only calls services on them.
 
 Target: Home Assistant **2025.6+**, Python **3.13**.
 
+## The garden, precisely
+
+All five zones draw from **one pump** (Grundfos RMQ, monitored via a smart plug
+as `binary_sensor.pump_running`). Two zones can never run at once. This is the
+central constraint and it shapes everything else.
+
+| Order | Zone | Driver | Notes |
+|---|---|---|---|
+| 1 | Jardin | `distributor` | One valve → GARDENA 3-outlet distributor, 3 m of porous hose per outlet. Occupies **3 × duration** plus gaps. Japanese maple, nandinas, grasses, planted 4 months ago — fears waterlogging (phytophthora) as much as drought. |
+| 2 | Gazon | `button` | Aiper IrriSense on a dedicated line. Start/stop **buttons**, no state entity — the run timer is the only truth. Rotary sprinkler, far higher flow than the porous hose. Seasonally enabled/disabled by the AI. |
+| 3 | Parking | `valve` | 10 m hose. Blueberries in fruit, raised bed, full sun against a white wall. |
+| 4 | Entrée | `valve` | 17 m hose — the most productive line per minute. Established spiraeas, robust. |
+| 5 | Framboisier | `valve` | 5 m hose. Young raspberry canes, raised bed. |
+
+Porous hose delivers roughly 2–4 L/h per metre at 1 bar. **Zone flow rates
+differ by a factor of five**, so a uniform percentage adjustment across zones is
+always wrong — this is why the model is given computed litres per run rather
+than being asked to infer them.
+
 ## Non-negotiable invariants
 
-Break these and the integration gets worse than the YAML it replaced.
-
-1. **Never own the hardware.** Always act on the user's existing valve/switch
-   entity via `valve.open_valve` / `valve.close_valve` (or `turn_on`/`turn_off`
-   for switch-domain entities). Never talk to a device directly.
-2. **A run must survive a restart.** Live runs are persisted to `Store` and
-   re-armed in `IrrigationScheduler._async_restore_runs`. If a run's end time
-   passed while HA was down, close the valve on startup. A valve left open
-   overnight is the worst failure mode this project has.
-3. **`None` rain probability is not 0%.** When the forecast is unavailable the
-   rain skip is bypassed entirely — the zone waters. Never coerce to `0.0`.
-4. **Manual-run adoption is opt-in per zone.** The old YAML package started a
-   zone timer whenever the valve turned on from *any* source, which is why runs
-   started from HomeKit and Google Home appeared to close themselves after a
-   fixed interval. Here that behaviour lives behind `adopt_manual_runs` on the
-   zone subentry and defaults to off. Do not make it implicit again.
-5. **Entities own the mutable values.** `enabled`, `duration`, `start_time` live
-   on `ZoneRuntime` and are backed by `RestoreEntity`. The subentry data only
-   supplies initial defaults. Do not add a second write path that edits the
-   subentry from an entity — pick one source of truth and it is the entity.
-6. **New scheduling rules go in `models.should_start`.** It is a pure function
-   so it can be tested without booting HA. Do not inline conditions in the tick.
+1. **Never own the hardware.** Act on the user's existing entities through
+   their own services. Never talk to a device directly.
+2. **One pump, one zone at a time.** Start times are **derived** by
+   `planner.plan_start_times`, never stored and never user-editable. What the
+   user sets is the morning base (05:30), the evening base (19:00) and the
+   margin. Recompute via `apply_start_times` after *any* change to a duration,
+   an enabled flag or a base time.
+3. **A run must survive a restart.** Live runs are persisted and re-armed on
+   setup; a run whose end time passed while HA was down closes its valve
+   immediately. A valve left open overnight is the worst failure this project
+   has.
+4. **`None` rain probability is not 0%.** Missing forecast bypasses the rain
+   skip and the zone waters.
+5. **Manual-run adoption is opt-in per zone.** The YAML started a zone timer
+   whenever a valve opened from any source, which is why HomeKit runs looked
+   like the device was closing them. Keep it behind a per-zone flag, default
+   off.
+6. **New scheduling rules go in `models.py` / `planner.py`.** They are pure —
+   no `hass`, no I/O. That is what makes the sequencing testable. Do not inline
+   conditions in the scheduler tick.
+7. **The AI writes setpoints, never actions.** It may propose duration,
+   schedule, second run, rain threshold, and enabled *only for zones flagged
+   seasonal*. Every value passes through `planner.clamp_zone_plan` or
+   `clamp_rain_threshold`, which fall back to the current value. The AI can
+   never open, close, delay or cancel a run, can never touch a zone that is
+   currently running, and its failure mode is "yesterday's plan, unchanged".
 
 ## Architecture
 
 ```
-__init__.py     setup/unload, builds runtime data, forwards platforms
-const.py        keys and defaults, no logic
-models.py       ZoneRuntime / HubRuntime + should_start()  <- pure, tested
-coordinator.py  RainCoordinator: weather.get_forecasts -> today's probability
-scheduler.py    minute tick, valve I/O, stop timers, Store, adoption listener
-config_flow.py  hub flow + ZoneSubentryFlowHandler (add/reconfigure a zone)
-entity.py       base classes, device info, dispatcher subscription
-switch/number/time/sensor/button.py   platforms
+models.py       ZoneSpec / ZoneState / HubState, DriverType, SchedulePreset  <- pure
+planner.py      sequencing, overlap detection, AI clamping, zone briefings   <- pure
+drivers.py      ValveDriver / DistributorDriver / ButtonDriver               <- I/O
+coordinator.py  RainCoordinator: weather.get_forecasts -> probability
+ai.py           nightly plan: build prompt, call ai_task, clamp, apply
+scheduler.py    minute tick, run/stop, Store persistence, adoption listener
+config_flow.py  hub flow + ZoneSubentryFlowHandler (driver-specific forms)
+entity.py       base classes, per-zone device info
+switch/number/select/time/sensor/button/binary_sensor.py
 ```
 
-Zones are **config subentries** of a single hub entry, one device per zone.
-Adding a fifth zone must stay a UI action — never hardcode zone counts.
+### Drivers
 
-Platform setup adds zone entities with
-`async_add_entities([...], config_subentry_id=subentry_id)` so they land on the
-right device. Hub entities are added without that argument.
+The driver abstraction is why Gazon works. Interface:
 
-Scheduling is a **once-a-minute tick** (`async_track_time_change(second=0)`)
-rather than one timer per zone start time. This is deliberate: start times are
-mutable at runtime via the `time` entities, and re-arming per-zone timers on
-every change was the fiddly part. Do not "optimise" this back into per-zone
-timers without a strong reason.
+```python
+async def async_start(self) -> None
+async def async_stop(self) -> None
+@property
+def is_open(self) -> bool | None    # None when the driver has no feedback
+```
 
-## Home Assistant rules Claude Code gets wrong from memory
+- `ValveDriver` — `valve.open_valve` / `close_valve`, or `switch.turn_on/off`.
+- `DistributorDriver` — opens the valve once, advances outlets on a pulse.
+  Occupancy is `outlets × duration + gaps`.
+- `ButtonDriver` — presses a start button and a stop button. `is_open` returns
+  `None`. **Never assume you can read this zone's state**; the run timer is
+  authoritative, and the adoption listener must skip these zones entirely.
 
-- No blocking I/O in the event loop. No `requests`, no `time.sleep`, no file
-  reads outside `async_add_executor_job`.
-- `hass.data[DOMAIN]` is deprecated for this pattern — use `entry.runtime_data`
-  with the `type IrrigationConfigEntry = ConfigEntry[IrrigationRuntimeData]`
-  alias already defined in `__init__.py`.
-- `weather.get_forecasts` is a **service with a response** — it needs
-  `blocking=True, return_response=True` and returns
-  `{entity_id: {"forecast": [...]}}`. The old `weather.get_forecast` (singular)
-  is removed; do not reintroduce it.
-- Entity names come from `_attr_translation_key` + `strings.json`, with
-  `_attr_has_entity_name = True`. Do not set `_attr_name` directly.
-- Every string shown in the UI must exist in **both** `strings.json` and
-  `translations/en.json`. They are currently identical; keep them in sync or
-  hassfest fails.
-- `async_setup_entry` must forward platforms *before* the scheduler starts, so
-  restored entity values are in place when the first tick fires.
+### Entities
+
+Per zone: `switch.<zone>_enabled`, `switch.<zone>_second_run`,
+`number.<zone>_duration`, `select.<zone>_schedule`,
+`sensor.<zone>_morning_start`, `sensor.<zone>_evening_start`,
+`sensor.<zone>_next_run`, `sensor.<zone>_finishes_at`, `sensor.<zone>_status`,
+`button.<zone>_run_now`, `button.<zone>_stop`.
+
+Note `sensor` for the start times, not `time` — they are derived (invariant 2).
+
+Hub: `switch.irrigation_master`, `switch.irrigation_rain_skip`,
+`switch.irrigation_ai`, `number.irrigation_rain_threshold`,
+`time.irrigation_morning_base`, `time.irrigation_evening_base`,
+`time.irrigation_plan_at`, `sensor.irrigation_rain_probability`,
+`sensor.irrigation_daily_plan`, `binary_sensor.irrigation_overlap`,
+`binary_sensor.irrigation_no_flow`, `button.irrigation_stop_all`,
+`button.irrigation_plan_now`.
+
+## Home Assistant rules that get remembered wrong
+
+- No blocking I/O in the event loop.
+- Use `entry.runtime_data`, not `hass.data[DOMAIN]`.
+- `weather.get_forecasts` needs `blocking=True, return_response=True` and
+  returns `{entity_id: {"forecast": [...]}}`. `get_forecast` (singular) is gone.
+- `ai_task.generate_data` likewise needs `return_response=True`. Declare the
+  shape with `structure` — see `docs/ai-contract.md`.
+- **Sensor states cap at 255 characters.** The plan narrative goes in an
+  attribute, never the state.
+- Entity names come from `_attr_translation_key` + `strings.json` with
+  `_attr_has_entity_name = True`. Never set `_attr_name`.
+- Every UI string must exist in both `strings.json` and `translations/en.json`.
+- Forward platforms before starting the scheduler, so restored entity values
+  are in place when the first tick fires.
 
 ## Dev loop
 
 ```bash
-# One-off (pytest + pytest-homeassistant-custom-component live here now)
 pip install -r requirements_dev.txt
-
-# Tests (pure logic runs without HA; the rest uses pytest-homeassistant-custom-component)
 pytest -q
-
-# Live testing against real HA: symlink the component into your config
-ln -s "$PWD/custom_components/irrigation_scheduler" \
-      /path/to/ha/config/custom_components/irrigation_scheduler
+ruff check .
+scripts/develop          # throwaway HA with this component mounted
 ```
 
-Reload without a full restart from **Developer Tools → YAML → Reload custom
-integrations**, then reload the config entry from the integration page. Full
-restarts are only needed after `manifest.json` changes.
+Reload without restarting: Developer Tools → YAML → Reload custom integrations,
+then reload the config entry. Full restart only after `manifest.json` changes.
 
-For a throwaway instance, `ludeeus/integration_blueprint` has a devcontainer and
-`scripts/develop` that boots HA with this folder mounted; copying those two in
-is the fastest way to get an isolated test HA.
-
-Verify before opening a PR: `pytest`, then the `hassfest` and `hacs` GitHub
-Actions in `.github/workflows/validate.yml`.
+Verify before a PR: `pytest`, `ruff`, then the `hassfest` and `hacs` workflows.
 
 ## Current state
 
-Working: config flow with subentries, per-zone entities, minute tick, rain skip,
-run/stop buttons and entity services, restart recovery, manual-run adoption.
+Done: pure domain model and planner with tests (occupancy for all three driver
+types, sequencing, overlap detection, AI clamping).
 
-Tested: `should_start` logic, config-entry setup/unload with a zone subentry,
-and the scheduler's dangerous paths — restart recovery (expired run closes the
-valve, future run re-arms its stop timer), adoption on/off, `_self_driven`
-suppression, and stop cancelling a pending close.
+To build, in order:
 
-Known gaps — pick these up in roughly this order:
-
-1. ~~**No tests beyond `should_start`.**~~ **Done.** `tests/test_setup.py`
-   covers setup/unload; `tests/test_scheduler.py` covers restart recovery (both
-   branches), the adoption listener with `adopt_manual_runs` on and off, the
-   self-driven suppression, and stop cancelling the pending stop timer.
-2. ~~**Sequential mode.**~~ **Done.** A hub-level "Run zones sequentially"
-   switch (`HubRuntime.sequential`) queues a start that would overlap another
-   running zone and releases it when that zone stops. Adopted runs bypass the
-   queue (the valve is already open); the queue is not persisted (a queued run
-   never opened a valve, so a restart safely forgets it). Status sensor shows
-   `queued`.
-3. ~~**`weekdays` is subentry-only.**~~ **Done.** Seven per-zone `switch`
-   entities (`weekday_mon`..`weekday_sun`, config category) own the zone's
-   `weekdays` list and restore it across restarts; the subentry still seeds the
-   initial values. Same source-of-truth model as `duration`/`start_time`
-   (invariant 5): the subentry selector remains as an initial default only.
-4. ~~**Valve unavailability.**~~ **Done.** `async_start_zone` checks the valve
-   state before opening (non-adopted starts only); if it is missing or
-   `unavailable` it logs a warning, sets `last_skipped_reason` /status to
-   `valve_unavailable`, does not start a phantom run, and releases the next
-   queued zone.
-5. ~~**Precipitation in mm.**~~ **Done.** `RainCoordinator` now returns a
-   `RainForecast(probability, precipitation_mm)`. `should_start` uses
-   probability when present and falls back to the mm amount otherwise, against a
-   new `rain_mm_threshold` (hub number entity, default 2 mm). A missing
-   probability still never reads as 0% — it defers to mm, and both missing means
-   the zone waters.
-6. ~~**No repair issues.**~~ **Done.** `IrrigationScheduler._check_valve_entities`
-   (run at start) raises a `valve_missing_<subentry_id>` repair issue when a
-   zone's valve is neither registered nor present, and clears it once the valve
-   resolves. The registry check tolerates startup load order.
-7. ~~**Quality scale.**~~ **Done.** `manifest.json` now declares
-   `"quality_scale": "silver"`. The integration already meets the substantive
-   silver bar: every entity has a unique id, the single hub entry is guarded by
-   a unique id, config-entry unload is clean, and valve unavailability is
-   handled (gap 4). The value is a plain manifest string at runtime; the
-   `hassfest`/`hacs` GitHub Actions are the authoritative check.
+1. **Drivers + scheduler.** Port run/stop, Store persistence and restart
+   recovery from the v0.1 scaffold, routed through drivers. Tests for restart
+   recovery both branches, and for the adoption listener skipping button zones.
+2. **Config flow.** Hub flow (weather entity, pump sensor, bases, plan time)
+   and a zone subentry flow whose second step is driver-specific: valve entity;
+   or valve + outlets + gap; or start/stop buttons. Plus description, hose
+   length, emitter rates, order, seasonal flag, bounds.
+3. **Platforms.** As listed above. Start times as sensors.
+4. **AI layer.** `docs/ai-contract.md` end to end. Test the clamping against
+   real malformed responses, not just happy paths.
+5. **Pump watchdog.** Port the no-flow warning: zone running 3 minutes with
+   `binary_sensor.pump_running` off → repair issue. For Gazon, "running" means
+   the timer is active, since there is no valve to watch.
+6. **Repair issues** when a zone's configured entity disappears.
+7. **Quality scale.** Add `"quality_scale": "silver"` to `manifest.json` and
+   fix what hassfest then demands.
 
 ## Migrating from the YAML package
 
-There is no automatic migration and there should not be — the old helpers are
-`input_*` entities the user created, and deleting them from code would be rude.
-Migration is: set up the integration, recreate the four zones in the UI, update
-the Mushroom dashboard to the new entity IDs, then delete
-`config/packages/irrigation.yaml` and the `packages:` include if nothing else
-uses it. Old dashboard cards reference `input_number.irrigation_zoneN_duration`;
-the new equivalent is `number.<zone>_duration`.
+No automatic migration — the old helpers are `input_*` entities the user
+created, and deleting them from code would be rude. Set up the integration,
+recreate the five zones, repoint the Mushroom dashboard, then remove
+`irrigation.yaml` and `irrigation_ai.yaml`.
+
+Dashboard entity mapping: `input_number.irrigation_zoneN_duration` →
+`number.<zone>_duration`; `input_select.irrigation_zoneN_schedule` →
+`select.<zone>_schedule`; `input_datetime.irrigation_zoneN_start` →
+`sensor.<zone>_morning_start` (now read-only);
+`input_text.irrigation_ai_last_summary` →
+`state_attr('sensor.irrigation_daily_plan', 'narrative')`.

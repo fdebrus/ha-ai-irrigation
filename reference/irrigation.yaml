@@ -1,0 +1,911 @@
+# ============================================================
+#  Irrigation Scheduler — SIMPLIFIED 2026-07-25
+#  Updated 2026-07-26: GAZON moved OFF the distributor.
+#    The skip-pulse indexing on the GARDENA distributor proved
+#    unreliable, so the Aiper sprinkler now has its own
+#    DEDICATED line/valve. Jardin is back to 3 outlets and the
+#    distributor dial returns to start after exactly 3 valve
+#    openings per session.
+#  Zone durations are in MINUTES on the dashboard; scripts and
+#    timers convert to seconds (×60) internally. Gap + skip
+#    pulse stay in seconds.
+#  Zones:
+#    1 = Jardin      -> valve.garden_jardin -> GARDENA
+#                       distributor outlets 1-3 (in sequence)
+#    2 = Parking     -> valve.garden_parking
+#    3 = Entrée      -> valve.garden_entry
+#    4 = Framboisier -> valve.garden_framboisier
+#    5 = Gazon       -> Aiper IrriSense on its own dedicated
+#                       line, driven by button entities:
+#                         button.irrisense_2_start_watering
+#                         button.irrisense_2_stop_watering
+#                       No valve entity and no open/closed
+#                       state — HA presses start, runs
+#                       timer.irrigation_zone5, then presses
+#                       stop. (If the IrriSense stops on its
+#                       own first, the extra stop press is
+#                       harmless.)
+#  Weather entity: weather.forecast_home
+#
+#  Distributor note: the GARDENA distributor is mechanical and
+#  has no feedback. It advances one outlet per water cycle.
+#  With 3 outlets connected, every Jardin session opens the
+#  valve exactly 3 times (soak, or a short skip pulse if the
+#  outlet is disabled) so the dial returns to its start
+#  position.
+#
+#  SIMPLIFICATION 2026-07-25:
+#  Valves are operated ONLY by this scheduler or fully manually.
+#  A valve opened by hand stays open until closed by hand.
+# ============================================================
+
+# ------------------------------------------------------------
+# Global controls
+# ------------------------------------------------------------
+input_boolean:
+  irrigation_master:
+    name: Irrigation master switch
+    icon: mdi:sprinkler-fire
+  irrigation_rain_skip:
+    name: Skip when rain expected
+    icon: mdi:weather-rainy
+
+  # Group enables
+  irrigation_zone1_enabled:
+    name: Jardin enabled
+    icon: mdi:sprinkler-variant
+  irrigation_zone2_enabled:
+    name: Parking enabled
+    icon: mdi:sprinkler-variant
+  irrigation_zone3_enabled:
+    name: Entrée enabled
+    icon: mdi:sprinkler-variant
+  irrigation_zone4_enabled:
+    name: Framboisier enabled
+    icon: mdi:sprinkler-variant
+  irrigation_zone5_enabled:
+    name: Gazon enabled
+    icon: mdi:grass
+
+  # Jardin per-outlet enables + running flag
+  jardin_out1_enabled:
+    name: Jardin outlet 1
+    icon: mdi:numeric-1-circle
+  jardin_out2_enabled:
+    name: Jardin outlet 2
+    icon: mdi:numeric-2-circle
+  jardin_out3_enabled:
+    name: Jardin outlet 3
+    icon: mdi:numeric-3-circle
+  jardin_running:
+    name: Jardin session running
+    icon: mdi:play-circle
+
+  # Optional second daily run (off by default)
+  irrigation_zone1_start2_enabled:
+    name: Jardin 2nd run
+    icon: mdi:repeat
+  irrigation_zone2_start2_enabled:
+    name: Parking 2nd run
+    icon: mdi:repeat
+  irrigation_zone3_start2_enabled:
+    name: Entrée 2nd run
+    icon: mdi:repeat
+  irrigation_zone4_start2_enabled:
+    name: Framboisier 2nd run
+    icon: mdi:repeat
+  irrigation_zone5_start2_enabled:
+    name: Gazon 2nd run
+    icon: mdi:repeat
+
+input_number:
+  irrigation_rain_threshold:
+    name: Rain probability threshold
+    min: 10
+    max: 100
+    step: 5
+    unit_of_measurement: "%"
+    icon: mdi:water-percent
+
+  # Zone soak durations in MINUTES — single source of truth per
+  # zone. Scripts and timers multiply by 60 internally, because
+  # timer.start and the valves themselves work in seconds.
+  # Shared Jardin soak duration (same for all 3 outlets)
+  irrigation_zone1_duration:
+    name: Jardin duration
+    min: 1
+    max: 60
+    step: 1
+    unit_of_measurement: min
+    icon: mdi:timer-outline
+    mode: box
+  irrigation_zone2_duration:
+    name: Parking duration
+    min: 1
+    max: 60
+    step: 1
+    unit_of_measurement: min
+    icon: mdi:timer-outline
+    mode: box
+  irrigation_zone3_duration:
+    name: Entrée duration
+    min: 1
+    max: 60
+    step: 1
+    unit_of_measurement: min
+    icon: mdi:timer-outline
+    mode: box
+  irrigation_zone4_duration:
+    name: Framboisier duration
+    min: 1
+    max: 60
+    step: 1
+    unit_of_measurement: min
+    icon: mdi:timer-outline
+    mode: box
+  irrigation_zone5_duration:
+    name: Gazon duration
+    min: 1
+    max: 60
+    step: 1
+    unit_of_measurement: min
+    icon: mdi:timer-outline
+    mode: box
+
+  # Distributor settings (Jardin only now)
+  # These stay in SECONDS — they are short by nature.
+  jardin_gap:
+    name: Jardin gap between outlets
+    min: 5
+    max: 60
+    step: 1
+    unit_of_measurement: s
+    icon: mdi:timer-sand
+    mode: box
+  jardin_advance_pulse:
+    name: Jardin skip pulse (disabled outlet)
+    min: 3
+    max: 60
+    step: 1
+    unit_of_measurement: s
+    icon: mdi:step-forward
+    mode: box
+  jardin_current_outlet:
+    name: Jardin current outlet
+    min: 1
+    max: 3
+    step: 1
+    icon: mdi:map-marker
+    mode: box
+
+input_datetime:
+  irrigation_zone1_start:
+    name: Jardin start time
+    has_date: false
+    has_time: true
+  irrigation_zone2_start:
+    name: Parking start time
+    has_date: false
+    has_time: true
+  irrigation_zone3_start:
+    name: Entrée start time
+    has_date: false
+    has_time: true
+  irrigation_zone4_start:
+    name: Framboisier start time
+    has_date: false
+    has_time: true
+  irrigation_zone5_start:
+    name: Gazon start time
+    has_date: false
+    has_time: true
+
+  irrigation_zone1_start2:
+    name: Jardin 2nd start time
+    has_date: false
+    has_time: true
+  irrigation_zone2_start2:
+    name: Parking 2nd start time
+    has_date: false
+    has_time: true
+  irrigation_zone3_start2:
+    name: Entrée 2nd start time
+    has_date: false
+    has_time: true
+  irrigation_zone4_start2:
+    name: Framboisier 2nd start time
+    has_date: false
+    has_time: true
+  irrigation_zone5_start2:
+    name: Gazon 2nd start time
+    has_date: false
+    has_time: true
+
+input_select:
+  irrigation_zone1_schedule:
+    name: Jardin schedule
+    icon: mdi:calendar-clock
+    options: &schedule_options
+      - Daily
+      - Weekdays
+      - Weekends
+      - Mon / Wed / Fri
+      - Tue / Thu / Sat
+      - Mon / Thu
+  irrigation_zone2_schedule:
+    name: Parking schedule
+    icon: mdi:calendar-clock
+    options: *schedule_options
+  irrigation_zone3_schedule:
+    name: Entrée schedule
+    icon: mdi:calendar-clock
+    options: *schedule_options
+  irrigation_zone4_schedule:
+    name: Framboisier schedule
+    icon: mdi:calendar-clock
+    options: *schedule_options
+  irrigation_zone5_schedule:
+    name: Gazon schedule
+    icon: mdi:calendar-clock
+    options: *schedule_options
+
+# ------------------------------------------------------------
+# Timers (single-valve zones 2,3,4,5; Jardin uses the
+# sequential distributor script instead). Timers only ever run
+# for SCHEDULER-started runs — a manual valve open starts
+# nothing.
+# ------------------------------------------------------------
+timer:
+  irrigation_zone2:
+    name: Parking running
+    icon: mdi:sprinkler
+  irrigation_zone3:
+    name: Entrée running
+    icon: mdi:sprinkler
+  irrigation_zone4:
+    name: Framboisier running
+    icon: mdi:sprinkler
+  irrigation_zone5:
+    name: Gazon running
+    icon: mdi:sprinkler
+
+# ------------------------------------------------------------
+# Scripts
+# ------------------------------------------------------------
+script:
+  # ---- Simple single-valve zones (2,3,4,5) ------------------
+  irrigation_run_zone:
+    alias: Irrigation - run zone
+    fields:
+      zone:
+        description: Zone number (2-5)
+        example: "2"
+    sequence:
+      - variables:
+          # Duration helper is in minutes -> convert to seconds
+          seconds: "{{ ((states('input_number.irrigation_zone' ~ zone ~ '_duration') | float(10)) * 60) | int }}"
+      - service: timer.start
+        target:
+          entity_id: "timer.irrigation_zone{{ zone }}"
+        data:
+          duration: "{{ seconds }}"
+      - choose:
+          # Gazon: Aiper IrriSense has no valve — press its start button
+          - conditions: "{{ zone | string == '5' }}"
+            sequence:
+              - service: button.press
+                target:
+                  entity_id: button.irrisense_2_start_watering
+        default:
+          - service: valve.open_valve
+            target:
+              entity_id: >-
+                {{ {
+                  '2': 'valve.garden_parking',
+                  '3': 'valve.garden_entry',
+                  '4': 'valve.garden_framboisier'
+                }[zone | string] }}
+
+  irrigation_stop_zone:
+    alias: Irrigation - stop zone
+    fields:
+      zone:
+        description: Zone number (2-5)
+        example: "2"
+    sequence:
+      - service: timer.cancel
+        target:
+          entity_id: "timer.irrigation_zone{{ zone }}"
+      - choose:
+          # Gazon: press the IrriSense stop button
+          - conditions: "{{ zone | string == '5' }}"
+            sequence:
+              - service: button.press
+                target:
+                  entity_id: button.irrisense_2_stop_watering
+        default:
+          - service: valve.close_valve
+            target:
+              entity_id: >-
+                {{ {
+                  '2': 'valve.garden_parking',
+                  '3': 'valve.garden_entry',
+                  '4': 'valve.garden_framboisier'
+                }[zone | string] }}
+
+  # ---- Jardin distributor sequence (outlets 1-3) ------------
+  # The GARDENA distributor advances one outlet per water
+  # cycle. Every session opens the valve exactly 3 times (soak
+  # if the outlet is enabled, otherwise a short skip pulse) so
+  # the dial returns to its start position.
+  irrigation_run_jardin:
+    alias: Irrigation - run Jardin (outlets 1-3)
+    mode: single
+    sequence:
+      - service: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.jardin_running
+      - repeat:
+          for_each: ["1", "2", "3"]
+          sequence:
+            - variables:
+                idx: "{{ repeat.item }}"
+                soak: "{{ is_state('input_boolean.jardin_out' ~ idx ~ '_enabled', 'on') }}"
+                # Soak duration is in MINUTES (×60); the skip
+                # pulse stays in seconds.
+                seconds: >-
+                  {{ (((states('input_number.irrigation_zone1_duration') | float(10)) * 60) | int)
+                       if soak
+                     else (states('input_number.jardin_advance_pulse') | float(30) | int) }}
+            - service: input_number.set_value
+              target:
+                entity_id: input_number.jardin_current_outlet
+              data:
+                value: "{{ idx }}"
+            - service: valve.open_valve
+              target:
+                entity_id: valve.garden_jardin
+            - delay:
+                seconds: "{{ seconds }}"
+            - service: valve.close_valve
+              target:
+                entity_id: valve.garden_jardin
+            # Pause so the distributor indexes to the next outlet
+            - if: "{{ idx | int < 3 }}"
+              then:
+                - delay:
+                    seconds: "{{ states('input_number.jardin_gap') | float(10) | int }}"
+      # Three closes have advanced the distributor back to start
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.jardin_current_outlet
+        data:
+          value: 1
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.jardin_running
+
+  irrigation_stop_jardin:
+    alias: Irrigation - stop Jardin
+    sequence:
+      - service: script.turn_off
+        target:
+          entity_id: script.irrigation_run_jardin
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.jardin_running
+      # Closing an open valve still advances the mechanical
+      # distributor by one outlet — keep the tracker in sync.
+      - if: "{{ states('valve.garden_jardin') in ['open', 'opening'] }}"
+        then:
+          - service: valve.close_valve
+            target:
+              entity_id: valve.garden_jardin
+          - service: input_number.set_value
+            target:
+              entity_id: input_number.jardin_current_outlet
+            data:
+              value: >-
+                {{ (states('input_number.jardin_current_outlet') | float(1) | int) % 3 + 1 }}
+
+  # ---- Gazon wrappers (names used by dashboard) -------------
+  irrigation_run_gazon:
+    alias: Irrigation - run Gazon (Aiper, dedicated line)
+    sequence:
+      - service: script.irrigation_run_zone
+        data:
+          zone: "5"
+
+  irrigation_stop_gazon:
+    alias: Irrigation - stop Gazon
+    sequence:
+      - service: script.irrigation_stop_zone
+        data:
+          zone: "5"
+
+# ------------------------------------------------------------
+# Automations
+# ------------------------------------------------------------
+automation:
+  # ---- Jardin scheduled start (sequential) ------------------
+  - id: irrigation_jardin_start
+    alias: Irrigation - Jardin scheduled start
+    trigger:
+      - platform: time
+        at: input_datetime.irrigation_zone1_start
+        id: "1"
+      - platform: time
+        at: input_datetime.irrigation_zone1_start2
+        id: "1b"
+    condition:
+      - condition: state
+        entity_id: input_boolean.irrigation_master
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.irrigation_zone1_enabled
+        state: "on"
+      # Second daily run only if its toggle is on
+      - condition: template
+        value_template: >-
+          {{ not trigger.id.endswith('b')
+             or is_state('input_boolean.irrigation_zone1_start2_enabled', 'on') }}
+      - condition: template
+        value_template: >-
+          {% set sched = states('input_select.irrigation_zone1_schedule') %}
+          {% set dow = now().isoweekday() %}
+          {% if sched == 'Daily' %} true
+          {% elif sched == 'Weekdays' %} {{ dow <= 5 }}
+          {% elif sched == 'Weekends' %} {{ dow >= 6 }}
+          {% elif sched == 'Mon / Wed / Fri' %} {{ dow in [1, 3, 5] }}
+          {% elif sched == 'Tue / Thu / Sat' %} {{ dow in [2, 4, 6] }}
+          {% elif sched == 'Mon / Thu' %} {{ dow in [1, 4] }}
+          {% else %} true
+          {% endif %}
+    action:
+      - if:
+          - condition: state
+            entity_id: input_boolean.irrigation_rain_skip
+            state: "on"
+        then:
+          - service: weather.get_forecasts
+            target:
+              entity_id: weather.forecast_home
+            data:
+              type: daily
+            response_variable: fc
+          - variables:
+              rain_prob: >-
+                {{ fc['weather.forecast_home']['forecast'][0]['precipitation_probability']
+                   | default(0) | int(0) }}
+              raining_now: "{{ states('weather.forecast_home') in ['rainy', 'pouring'] }}"
+              threshold: "{{ states('input_number.irrigation_rain_threshold') | float(60) | int }}"
+          - if:
+              - condition: template
+                value_template: "{{ raining_now or rain_prob >= threshold }}"
+            then:
+              - service: persistent_notification.create
+                data:
+                  title: "Irrigation skipped"
+                  message: >-
+                    Jardin session skipped —
+                    {% if raining_now %}it is currently raining.
+                    {% else %}rain probability today is {{ rain_prob }}%
+                    (threshold {{ threshold }}%).{% endif %}
+                  notification_id: "irrigation_skip_jardin"
+              - stop: "Skipped due to rain"
+      - service: script.irrigation_run_jardin
+
+  # ---- Scheduled starts: Parking / Entrée / Framboisier / Gazon
+  - id: irrigation_scheduled_start
+    alias: Irrigation - scheduled start (2-5)
+    mode: parallel
+    max: 4
+    trigger:
+      - platform: time
+        at: input_datetime.irrigation_zone2_start
+        id: "2"
+      - platform: time
+        at: input_datetime.irrigation_zone3_start
+        id: "3"
+      - platform: time
+        at: input_datetime.irrigation_zone4_start
+        id: "4"
+      - platform: time
+        at: input_datetime.irrigation_zone5_start
+        id: "5"
+      - platform: time
+        at: input_datetime.irrigation_zone2_start2
+        id: "2b"
+      - platform: time
+        at: input_datetime.irrigation_zone3_start2
+        id: "3b"
+      - platform: time
+        at: input_datetime.irrigation_zone4_start2
+        id: "4b"
+      - platform: time
+        at: input_datetime.irrigation_zone5_start2
+        id: "5b"
+    variables:
+      zone: "{{ trigger.id[0] }}"
+    condition:
+      - condition: state
+        entity_id: input_boolean.irrigation_master
+        state: "on"
+      - condition: template
+        value_template: >-
+          {{ is_state('input_boolean.irrigation_zone' ~ zone ~ '_enabled', 'on') }}
+      # Second daily run only if its toggle is on
+      - condition: template
+        value_template: >-
+          {{ not trigger.id.endswith('b')
+             or is_state('input_boolean.irrigation_zone' ~ zone ~ '_start2_enabled', 'on') }}
+      - condition: template
+        value_template: >-
+          {% set sched = states('input_select.irrigation_zone' ~ zone ~ '_schedule') %}
+          {% set dow = now().isoweekday() %}
+          {% if sched == 'Daily' %} true
+          {% elif sched == 'Weekdays' %} {{ dow <= 5 }}
+          {% elif sched == 'Weekends' %} {{ dow >= 6 }}
+          {% elif sched == 'Mon / Wed / Fri' %} {{ dow in [1, 3, 5] }}
+          {% elif sched == 'Tue / Thu / Sat' %} {{ dow in [2, 4, 6] }}
+          {% elif sched == 'Mon / Thu' %} {{ dow in [1, 4] }}
+          {% else %} true
+          {% endif %}
+    action:
+      - if:
+          - condition: state
+            entity_id: input_boolean.irrigation_rain_skip
+            state: "on"
+        then:
+          - service: weather.get_forecasts
+            target:
+              entity_id: weather.forecast_home
+            data:
+              type: daily
+            response_variable: fc
+          - variables:
+              rain_prob: >-
+                {{ fc['weather.forecast_home']['forecast'][0]['precipitation_probability']
+                   | default(0) | int(0) }}
+              raining_now: "{{ states('weather.forecast_home') in ['rainy', 'pouring'] }}"
+              threshold: "{{ states('input_number.irrigation_rain_threshold') | float(60) | int }}"
+          - if:
+              - condition: template
+                value_template: "{{ raining_now or rain_prob >= threshold }}"
+            then:
+              - service: persistent_notification.create
+                data:
+                  title: "Irrigation skipped"
+                  message: >-
+                    Zone {{ zone }} was skipped —
+                    {% if raining_now %}it is currently raining.
+                    {% else %}rain probability today is {{ rain_prob }}%
+                    (threshold {{ threshold }}%).{% endif %}
+                  notification_id: "irrigation_skip_zone{{ zone }}"
+              - stop: "Skipped due to rain"
+      - service: script.irrigation_run_zone
+        data:
+          zone: "{{ zone }}"
+
+  # ---- Timer finished -> close valve (2,3,4,5) --------------
+  - id: irrigation_timer_finished
+    alias: Irrigation - timer finished
+    mode: parallel
+    max: 4
+    trigger:
+      - platform: event
+        event_type: timer.finished
+        event_data:
+          entity_id: timer.irrigation_zone2
+        id: "2"
+      - platform: event
+        event_type: timer.finished
+        event_data:
+          entity_id: timer.irrigation_zone3
+        id: "3"
+      - platform: event
+        event_type: timer.finished
+        event_data:
+          entity_id: timer.irrigation_zone4
+        id: "4"
+      - platform: event
+        event_type: timer.finished
+        event_data:
+          entity_id: timer.irrigation_zone5
+        id: "5"
+    action:
+      - choose:
+          # Gazon: press the IrriSense stop button
+          - conditions: "{{ trigger.id == '5' }}"
+            sequence:
+              - service: button.press
+                target:
+                  entity_id: button.irrisense_2_stop_watering
+        default:
+          - service: valve.close_valve
+            target:
+              entity_id: >-
+                {{ {
+                  '2': 'valve.garden_parking',
+                  '3': 'valve.garden_entry',
+                  '4': 'valve.garden_framboisier'
+                }[trigger.id] }}
+
+  # ---- Valve closed mid-run -> cancel its timer (2,3,4) ------
+  # Only relevant for scheduler-started runs: if the valve gets
+  # closed by hand while a zone timer is active, cancel the
+  # timer so the run is considered finished. (Gazon has no
+  # valve state to watch — if you stop the IrriSense from its
+  # app, the zone-5 timer just expires and presses stop again,
+  # which is harmless.)
+  - id: irrigation_valve_manual_close
+    alias: Irrigation - valve closed during run
+    mode: parallel
+    max: 3
+    trigger:
+      - platform: state
+        entity_id: valve.garden_parking
+        to: "closed"
+        id: "2"
+      - platform: state
+        entity_id: valve.garden_entry
+        to: "closed"
+        id: "3"
+      - platform: state
+        entity_id: valve.garden_framboisier
+        to: "closed"
+        id: "4"
+    condition:
+      - condition: template
+        value_template: >-
+          {{ is_state('timer.irrigation_zone' ~ trigger.id, 'active') }}
+    action:
+      - service: timer.cancel
+        target:
+          entity_id: "timer.irrigation_zone{{ trigger.id }}"
+
+  # ---- Safety net: master off closes everything -------------
+  - id: irrigation_master_off
+    alias: Irrigation - master switched off
+    trigger:
+      - platform: state
+        entity_id: input_boolean.irrigation_master
+        to: "off"
+    action:
+      # Stop the Jardin distributor sequence if mid-run
+      - service: script.turn_off
+        target:
+          entity_id: script.irrigation_run_jardin
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.jardin_running
+      - service: timer.cancel
+        target:
+          entity_id:
+            - timer.irrigation_zone2
+            - timer.irrigation_zone3
+            - timer.irrigation_zone4
+            - timer.irrigation_zone5
+      - service: valve.close_valve
+        target:
+          entity_id:
+            - valve.garden_jardin
+            - valve.garden_parking
+            - valve.garden_entry
+            - valve.garden_framboisier
+      # Gazon: make sure the IrriSense is stopped too
+      - service: button.press
+        target:
+          entity_id: button.irrisense_2_stop_watering
+
+# ------------------------------------------------------------
+# Templates — schedule overlap detection + pump sensor
+# (all zones share one water source, so runs must not overlap)
+# ------------------------------------------------------------
+template:
+  - binary_sensor:
+      - name: Pump running
+        unique_id: irrigation_pump_running
+        icon: mdi:pump
+        state: "{{ states('sensor.water_pump_power') | float(0) > 20 }}"
+
+      - name: Irrigation schedule overlap
+        unique_id: irrigation_schedule_overlap
+        icon: mdi:alert
+        state: >-
+          {% set ns = namespace(runs=[], conflicts=[]) %}
+          {% set daysets = {
+            'Daily': [1,2,3,4,5,6,7],
+            'Weekdays': [1,2,3,4,5],
+            'Weekends': [6,7],
+            'Mon / Wed / Fri': [1,3,5],
+            'Tue / Thu / Sat': [2,4,6],
+            'Mon / Thu': [1,4] } %}
+          {% set names = {'1':'Jardin','2':'Parking','3':'Entrée','4':'Framboisier','5':'Gazon'} %}
+          {% set gap = states('input_number.jardin_gap') | float(10) %}
+          {% for z in ['1','2','3','4','5'] %}
+            {% if is_state('input_boolean.irrigation_zone' ~ z ~ '_enabled', 'on') %}
+              {# Zone durations are already in minutes #}
+              {% set dur = states('input_number.irrigation_zone' ~ z ~ '_duration') | float(10) | round(0, 'ceil') | int %}
+              {% if z == '1' %}
+                {# Jardin: 3 soaks + 2 inter-outlet gaps #}
+                {% set dur = dur * 3 + (((gap * 2) / 60) | round(0, 'ceil') | int) %}
+              {% endif %}
+              {% set days = daysets.get(states('input_select.irrigation_zone' ~ z ~ '_schedule'), [1,2,3,4,5,6,7]) %}
+              {% set t1 = states('input_datetime.irrigation_zone' ~ z ~ '_start') %}
+              {% if t1 not in ['unknown', 'unavailable'] %}
+                {% set m1 = (t1[0:2] | int) * 60 + (t1[3:5] | int) %}
+                {% set ns.runs = ns.runs + [(names[z] ~ ' (' ~ t1[0:5] ~ ')', m1, m1 + dur, days)] %}
+              {% endif %}
+              {% if is_state('input_boolean.irrigation_zone' ~ z ~ '_start2_enabled', 'on') %}
+                {% set t2 = states('input_datetime.irrigation_zone' ~ z ~ '_start2') %}
+                {% if t2 not in ['unknown', 'unavailable'] %}
+                  {% set m2 = (t2[0:2] | int) * 60 + (t2[3:5] | int) %}
+                  {% set ns.runs = ns.runs + [(names[z] ~ ' 2nd (' ~ t2[0:5] ~ ')', m2, m2 + dur, days)] %}
+                {% endif %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+          {% for i in range(ns.runs | count) %}
+            {% for j in range(i + 1, ns.runs | count) %}
+              {% set a = ns.runs[i] %}
+              {% set b = ns.runs[j] %}
+              {% set same_day = a[3] | select('in', b[3]) | list | count > 0 %}
+              {% if same_day and a[1] < b[2] and b[1] < a[2] %}
+                {% set ns.conflicts = ns.conflicts + [a[0] ~ ' ↔ ' ~ b[0]] %}
+              {% endif %}
+            {% endfor %}
+          {% endfor %}
+          {{ ns.conflicts | count > 0 }}
+        attributes:
+          conflicts: >-
+            {% set ns = namespace(runs=[], conflicts=[]) %}
+            {% set daysets = {
+              'Daily': [1,2,3,4,5,6,7],
+              'Weekdays': [1,2,3,4,5],
+              'Weekends': [6,7],
+              'Mon / Wed / Fri': [1,3,5],
+              'Tue / Thu / Sat': [2,4,6],
+              'Mon / Thu': [1,4] } %}
+            {% set names = {'1':'Jardin','2':'Parking','3':'Entrée','4':'Framboisier','5':'Gazon'} %}
+            {% set gap = states('input_number.jardin_gap') | float(10) %}
+            {% for z in ['1','2','3','4','5'] %}
+              {% if is_state('input_boolean.irrigation_zone' ~ z ~ '_enabled', 'on') %}
+                {# Zone durations are already in minutes #}
+                {% set dur = states('input_number.irrigation_zone' ~ z ~ '_duration') | float(10) | round(0, 'ceil') | int %}
+                {% if z == '1' %}
+                  {% set dur = dur * 3 + (((gap * 2) / 60) | round(0, 'ceil') | int) %}
+                {% endif %}
+                {% set days = daysets.get(states('input_select.irrigation_zone' ~ z ~ '_schedule'), [1,2,3,4,5,6,7]) %}
+                {% set t1 = states('input_datetime.irrigation_zone' ~ z ~ '_start') %}
+                {% if t1 not in ['unknown', 'unavailable'] %}
+                  {% set m1 = (t1[0:2] | int) * 60 + (t1[3:5] | int) %}
+                  {% set ns.runs = ns.runs + [(names[z] ~ ' (' ~ t1[0:5] ~ ')', m1, m1 + dur, days)] %}
+                {% endif %}
+                {% if is_state('input_boolean.irrigation_zone' ~ z ~ '_start2_enabled', 'on') %}
+                  {% set t2 = states('input_datetime.irrigation_zone' ~ z ~ '_start2') %}
+                  {% if t2 not in ['unknown', 'unavailable'] %}
+                    {% set m2 = (t2[0:2] | int) * 60 + (t2[3:5] | int) %}
+                    {% set ns.runs = ns.runs + [(names[z] ~ ' 2nd (' ~ t2[0:5] ~ ')', m2, m2 + dur, days)] %}
+                  {% endif %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+            {% for i in range(ns.runs | count) %}
+              {% for j in range(i + 1, ns.runs | count) %}
+                {% set a = ns.runs[i] %}
+                {% set b = ns.runs[j] %}
+                {% set same_day = a[3] | select('in', b[3]) | list | count > 0 %}
+                {% if same_day and a[1] < b[2] and b[1] < a[2] %}
+                  {% set ns.conflicts = ns.conflicts + [a[0] ~ ' ↔ ' ~ b[0]] %}
+                {% endif %}
+              {% endfor %}
+            {% endfor %}
+            {{ ns.conflicts | join(' — ') if ns.conflicts else 'none' }}
+
+automation overlap:
+  - id: irrigation_overlap_warning
+    alias: Irrigation - schedule overlap warning
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.irrigation_schedule_overlap
+        to: "on"
+    action:
+      - service: persistent_notification.create
+        data:
+          title: "⚠️ Irrigation schedule overlap"
+          message: >-
+            Two watering runs can coincide while sharing the same water source:
+            {{ state_attr('binary_sensor.irrigation_schedule_overlap', 'conflicts') }}.
+            Adjust the start times so runs don't overlap.
+          notification_id: irrigation_overlap
+
+  - id: irrigation_overlap_resolved
+    alias: Irrigation - schedule overlap resolved
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.irrigation_schedule_overlap
+        to: "off"
+    action:
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: irrigation_overlap
+
+automation pump:
+  # Toilets also run this pump, but only for 1-2 min per flush.
+  # Pump running CONTINUOUSLY for 10 min with all irrigation valves
+  # closed = leak or stuck toilet float.
+  - id: irrigation_pump_leak_warning
+    alias: Irrigation - pump leak warning
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.pump_running
+        to: "on"
+        for: "00:10:00"
+    condition:
+      - condition: state
+        entity_id: valve.garden_jardin
+        state: "closed"
+      - condition: state
+        entity_id: valve.garden_parking
+        state: "closed"
+      - condition: state
+        entity_id: valve.garden_entry
+        state: "closed"
+      - condition: state
+        entity_id: valve.garden_framboisier
+        state: "closed"
+      # Gazon has no valve entity — treat "watering" as the
+      # zone-5 timer being active.
+      - condition: template
+        value_template: "{{ not is_state('timer.irrigation_zone5', 'active') }}"
+    action:
+      - service: persistent_notification.create
+        data:
+          title: "💧 Pompe : débit anormal"
+          message: >-
+            La pompe RMQ tourne en continu depuis plus de 10 minutes alors
+            qu'aucune vanne d'arrosage n'est ouverte. Fuite possible ou
+            chasse d'eau qui coule (flotteur bloqué).
+          notification_id: irrigation_pump_leak
+
+  # Valve open (or Gazon session running) but pump idle for
+  # 3 min = no flow.
+  - id: irrigation_no_flow_warning
+    alias: Irrigation - no flow warning
+    mode: parallel
+    max: 5
+    trigger:
+      - platform: state
+        entity_id:
+          - valve.garden_jardin
+          - valve.garden_parking
+          - valve.garden_entry
+          - valve.garden_framboisier
+        to: "open"
+        for: "00:03:00"
+      # Gazon: no valve entity, so watch its session timer
+      - platform: state
+        entity_id: timer.irrigation_zone5
+        to: "active"
+        for: "00:03:00"
+        id: gazon
+    condition:
+      - condition: state
+        entity_id: binary_sensor.pump_running
+        state: "off"
+    action:
+      - service: persistent_notification.create
+        data:
+          title: "💧 Pompe : pas de débit"
+          message: >-
+            {% if trigger.id == 'gazon' %}
+            L'arrosage Gazon (Aiper IrriSense) tourne depuis 3 minutes
+            mais la pompe ne tourne pas. Vérifie la RMQ (alimentation,
+            alarme, mode Auto) et que l'IrriSense a bien démarré.
+            {% else %}
+            La vanne {{ trigger.to_state.attributes.friendly_name }} est
+            ouverte depuis 3 minutes mais la pompe ne tourne pas.
+            Vérifie la RMQ (alimentation, alarme, mode Auto).
+            {% endif %}
+          notification_id: irrigation_no_flow
