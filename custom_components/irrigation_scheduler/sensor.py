@@ -171,6 +171,11 @@ class RainProbabilitySensor(
         """Return the probability, or None when no forecast is available."""
         return self.coordinator.data
 
+    @property
+    def extra_state_attributes(self) -> dict[str, str | None]:
+        """Say where the probability came from (daily/hourly forecast)."""
+        return {"source": self.coordinator.source}
+
 
 class DailyPlanSensor(IrrigationHubEntity, SensorEntity):
     """The date of the last AI plan; the narrative lives in an attribute."""

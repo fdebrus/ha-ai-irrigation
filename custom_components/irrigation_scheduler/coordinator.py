@@ -37,27 +37,67 @@ class RainCoordinator(DataUpdateCoordinator[float | None]):
         )
         self.weather_entity_id = weather_entity_id
         self._warned = False
+        # Where the probability came from: "daily", "hourly" or None. Shown as
+        # a sensor attribute so an Unknown probability is diagnosable.
+        self.source: str | None = None
 
     async def _async_update_data(self) -> float | None:
         """
         Call weather.get_forecasts and pull today's rain probability.
 
+        The daily forecast is tried first; if the provider publishes no
+        ``precipitation_probability`` there (Met.no's daily forecast, for one),
+        fall back to the hourly forecast and take the maximum over the next 24
+        hours.
+
         A forecast is best-effort. Any failure -- the weather entity not loaded
-        yet, a wrong id, or one that offers no daily forecast -- yields ``None``
-        so the scheduler waters without the rain skip (invariant 4). It never
-        raises ``UpdateFailed``: an optional signal must not log an error on
-        every cycle, and a dropped forecast is the safe direction (water, don't
-        skip).
+        yet, a wrong id, or a provider with no probability at all -- yields
+        ``None`` so the scheduler waters without the rain skip (invariant 4).
+        It never raises ``UpdateFailed``: an optional signal must not log an
+        error on every cycle, and a dropped forecast is the safe direction
+        (water, don't skip).
         """
         if self.hass.states.get(self.weather_entity_id) is None:
             # Common at startup: the weather integration has not loaded yet.
             _LOGGER.debug("Weather entity %s not available yet", self.weather_entity_id)
+            self.source = None
             return None
+
+        daily = await self._async_get_forecast("daily")
+        if daily is None:
+            self.source = None
+            return None
+        self._warned = False
+        probability = daily[0].get("precipitation_probability") if daily else None
+        if probability is not None:
+            self.source = "daily"
+            return float(probability)
+
+        # Daily forecast without a probability field: try hourly, max over 24 h.
+        hourly = await self._async_get_forecast("hourly") or []
+        probabilities = [
+            hour["precipitation_probability"]
+            for hour in hourly[:24]
+            if hour.get("precipitation_probability") is not None
+        ]
+        if probabilities:
+            self.source = "hourly"
+            return float(max(probabilities))
+
+        _LOGGER.debug(
+            "No precipitation probability from %s (daily or hourly)",
+            self.weather_entity_id,
+        )
+        self.source = None
+        return None
+
+    async def _async_get_forecast(self, kind: str) -> list[dict] | None:
+        """Fetch one forecast type; None on failure (logged once per streak)."""
         try:
             response = await self.hass.services.async_call(
                 WEATHER_DOMAIN,
                 SERVICE_GET_FORECASTS,
-                {"type": "daily"},
+                {"type": kind},
                 target={"entity_id": self.weather_entity_id},
                 blocking=True,
                 return_response=True,
@@ -65,19 +105,13 @@ class RainCoordinator(DataUpdateCoordinator[float | None]):
         except Exception as err:  # noqa: BLE001 - forecast is best-effort
             if not self._warned:
                 _LOGGER.warning(
-                    "Forecast from %s unavailable (%s); watering without the "
-                    "rain skip until it recovers. Check that this entity exists "
-                    "and offers a daily forecast.",
+                    "%s forecast from %s unavailable (%s); watering without "
+                    "the rain skip until it recovers. Check that this entity "
+                    "exists and offers a forecast.",
+                    kind.capitalize(),
                     self.weather_entity_id,
                     err,
                 )
                 self._warned = True
             return None
-
-        self._warned = False
-        forecasts = (response or {}).get(self.weather_entity_id, {}).get("forecast")
-        if not forecasts:
-            _LOGGER.debug("No daily forecast from %s", self.weather_entity_id)
-            return None
-        probability = forecasts[0].get("precipitation_probability")
-        return None if probability is None else float(probability)
+        return (response or {}).get(self.weather_entity_id, {}).get("forecast")
