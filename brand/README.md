@@ -1,7 +1,7 @@
 # Brand assets
 
-Icons for the Irrigation Scheduler integration: a water droplet with clock
-hands ("scheduled watering").
+Icons for the Irrigation Scheduler integration: a water droplet carrying a
+four-point AI sparkle ("AI-driven watering").
 
 | File | Size | Purpose |
 | --- | --- | --- |
