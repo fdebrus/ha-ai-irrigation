@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import callback
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
@@ -31,6 +32,7 @@ from .const import (
     AI_RAIN_MAX,
     AI_RAIN_MIN,
     DOMAIN,
+    SIGNAL_ZONE_UPDATED,
     STORAGE_KEY_PLAN,
     STORAGE_VERSION,
 )
@@ -156,6 +158,10 @@ class IrrigationAI:
         hub.last_plan_narrative = stored.get("narrative")
         hub.last_plan_failed = bool(stored.get("failed", False))
         hub.last_plan_rejections = list(stored.get("rejections", []))
+        # Entities were added before this restore ran; push the restored plan
+        # to them or the daily-plan sensor sits on "unknown" until the next
+        # scheduler event (seen in production after a config-entry reload).
+        async_dispatcher_send(self._hass, SIGNAL_ZONE_UPDATED)
 
         self._unsub = async_track_time_change(self._hass, self._async_minute, second=0)
 
@@ -182,8 +188,10 @@ class IrrigationAI:
             return
         if (local.hour, local.minute) != (hub.plan_at.hour, hub.plan_at.minute):
             return
-        if hub.last_plan_date == local.date():
-            return
+        # No last_plan_date guard here: the tick matches this minute exactly
+        # once, and an earlier manual "Plan now" the same day must not suppress
+        # the nightly plan -- the evening forecast is fresher and the plan is
+        # for tomorrow. The date guard belongs to the startup catch-up only.
         self._hass.async_create_task(self.async_generate_plan())
 
     # ------------------------------------------------------------------
