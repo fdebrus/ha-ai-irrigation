@@ -1,7 +1,8 @@
 """Generate the Irrigation Scheduler brand icons.
 
-Renders a water droplet with minimal clock hands ("scheduled watering") to the
-sizes Home Assistant's ``home-assistant/brands`` repository expects:
+Renders a water droplet carrying a four-point AI sparkle ("AI-driven
+watering") to the sizes Home Assistant's ``home-assistant/brands`` repository
+expects:
 
     icon.png      256x256
     icon@2x.png   512x512
@@ -67,32 +68,36 @@ def render(size: int) -> Image.Image:
             gpx[x, y] = (r, g, b, 255)
     img = Image.composite(gradient, img, mask)
 
-    # Soft sheen in the upper-left, clipped to the droplet.
+    # Soft sheen in the upper-left, clipped to the droplet. Kept subtle so it
+    # does not compete with the sparkle.
     sheen = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     ImageDraw.Draw(sheen).ellipse(
-        [cx - 0.20 * size, circle_cy - 0.34 * size, cx + 0.02 * size, circle_cy - 0.06 * size],
-        fill=(255, 255, 255, 60),
+        [
+            cx - 0.24 * size,
+            circle_cy - 0.36 * size,
+            cx - 0.06 * size,
+            circle_cy - 0.12 * size,
+        ],
+        fill=(255, 255, 255, 42),
     )
     empty = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     img = Image.alpha_composite(img, Image.composite(sheen, empty, mask))
 
-    # Clock hands (10:10 pose) centred on the droplet's circle.
+    # Four-point AI sparkle (the Copilot/Gemini-style glyph) centred on the
+    # droplet's circle, with a small echo sparkle upper-right -- reads as
+    # "AI-driven" without lettering, and survives 32 px.
     draw = ImageDraw.Draw(img)
 
-    def hand(angle_deg: float, length: float, width: float) -> None:
-        a = math.radians(angle_deg)
-        tx = cx + length * math.sin(a)
-        ty = circle_cy - length * math.cos(a)
-        draw.line([(cx, circle_cy), (tx, ty)], fill=WHITE, width=int(width))
-        cap = width / 2
-        draw.ellipse([tx - cap, ty - cap, tx + cap, ty + cap], fill=WHITE)
+    def sparkle(sx: float, sy: float, outer: float, inner_ratio: float) -> None:
+        points = []
+        for i in range(8):
+            angle = math.radians(i * 45)
+            rad = outer if i % 2 == 0 else outer * inner_ratio
+            points.append((sx + rad * math.sin(angle), sy - rad * math.cos(angle)))
+        draw.polygon(points, fill=WHITE)
 
-    hand(60, 0.72 * radius, 0.050 * size)  # minute -> "2"
-    hand(-60, 0.52 * radius, 0.058 * size)  # hour -> "10"
-    pivot = 0.052 * size
-    draw.ellipse(
-        [cx - pivot, circle_cy - pivot, cx + pivot, circle_cy + pivot], fill=WHITE
-    )
+    sparkle(cx, circle_cy + 0.01 * size, 0.74 * radius, 0.22)
+    sparkle(cx + 0.13 * size, circle_cy - 0.16 * size, 0.27 * radius, 0.26)
     return img
 
 
