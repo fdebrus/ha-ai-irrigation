@@ -6,7 +6,7 @@
 
 <p align="center">
   A Home Assistant integration that sequences a shared-pump irrigation system and
-  adapts it every night with an LLM — configured entirely from the UI, no YAML.
+  adapts it every night with an LLM. Configured entirely from the UI, no YAML.
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@ and you drown a bed. This integration treats that constraint as the centre of
 the design rather than an afterthought.
 
 It is a **scheduler, not a device driver**. Your valves, buttons and pump already
-exist in Home Assistant — this integration only calls services on them, works out
+exist in Home Assistant. This integration only calls services on them, works out
 *when* each zone should run so they never collide, and once a night asks an LLM to
 nudge the setpoints for the weather. It never talks to hardware directly and never
 lets the AI open, close or cancel a valve.
@@ -37,21 +37,22 @@ lets the AI open, close or cancel a valve.
 ## Highlights
 
 - 🚰 **One pump, one zone at a time.** Start times are *derived* from a morning
-  base, an evening base and a margin — never hand-edited — so two zones can never
+  base, an evening base and a margin (never hand-edited), so two zones can never
   share the pump. Change a duration and the whole sequence re-derives itself.
-- 🔌 **Three zone types behind one interface** — a plain valve/switch, a
+- 🔌 **Three zone types behind one interface**: a plain valve/switch, a
   multi-outlet distributor, or a pair of start/stop buttons with no state.
 - 🧠 **A nightly AI plan** that proposes durations, schedules, second runs and the
-  rain threshold — reasoning in *litres delivered*, not blanket percentages —
-  while every value is clamped and the failure mode is "yesterday's plan, unchanged".
+  rain threshold, reasoning in *litres delivered* rather than blanket
+  percentages. Every value is clamped and the failure mode is "yesterday's
+  plan, unchanged".
 - 🌧️ **Weather-aware rain skip** on the forecast probability, where a *missing*
   forecast waters the garden rather than being read as "0 %".
 - 🔁 **Runs survive a restart.** A valve is never left open because Home Assistant
   rebooted mid-cycle; a run whose end passed while HA was down closes immediately.
-- 🩺 **It tells you when something is wrong** — a dry pump, a renamed valve, or an
+- 🩺 **It tells you when something is wrong**: a dry pump, a renamed valve, or an
   AI plan that would have collided all raise repair issues.
 - 🖐️ **Opt-in manual-run adoption**, per zone, so a valve opened from HomeKit or by
-  hand still gets closed after its duration — without hijacking every manual open.
+  hand still gets closed after its duration, without hijacking every manual open.
 
 ## How it works
 
@@ -61,12 +62,12 @@ You set three things: the **morning base** (e.g. 05:30), the **evening base**
 (19:00) and the **margin** between zones. From those, plus each zone's order and
 occupancy, the integration derives every zone's `Morning start` and `Evening
 start` and lays them end to end so no two runs overlap. That's why the start
-times are **read-only sensors**, not editable `time` entities — editing one
+times are **read-only sensors**, not editable `time` entities: editing one
 directly would break the single-pump guarantee.
 
 ### Zone drivers
 
-Every zone is one of three shapes. Occupancy — how long the pump is tied up — is
+Every zone is one of three shapes. Occupancy (how long the pump is tied up) is
 computed per type, which is why a uniform percentage change across zones is always
 wrong (flow rates can differ five-fold).
 
@@ -74,23 +75,23 @@ wrong (flow rates can differ five-fold).
 |---|---|---|
 | **Valve** | `valve.*` or `switch.*` | Opened and closed directly. The common case. |
 | **Distributor** | one valve → a mechanical multi-outlet distributor | Opens and advances one outlet per cycle; occupies `outlets × duration + gaps`. |
-| **Buttons** | a start button and a stop button | No readable state — the run timer is the only truth. Never watched for adoption. |
+| **Buttons** | a start button and a stop button | No readable state: the run timer is the only truth. Never watched for adoption. |
 
 ### The nightly AI plan
 
 At the configured plan time, the integration builds a briefing from each zone's
 computed litres-per-run and the forecast, and asks an [`ai_task`](https://www.home-assistant.io/integrations/ai_task/)
 entity for a structured plan. **The AI writes setpoints, never actions.** It may
-propose per-zone duration, schedule, second run and rain threshold — and *enabled*
+propose per-zone duration, schedule, second run and rain threshold, plus *enabled*
 only for zones you flag **seasonal**. Every field then passes through a clamp that
 falls back to the current value, running zones are left untouched, and if the
 proposed plan would ever overlap on the pump it is rolled back and a repair issue
-is raised. Any error at all — a malformed response, a service failure — keeps
+is raised. Any error at all (a malformed response, a service failure) keeps
 yesterday's plan. The reasoning is stored on `sensor.irrigation_daily_plan` under
 the `narrative` attribute, written in your Home Assistant language. See
 [`docs/ai-contract.md`](docs/ai-contract.md) for the full contract.
 
-The nightly run always fires at the configured plan time — a manual **Plan now**
+The nightly run always fires at the configured plan time. A manual **Plan now**
 earlier in the day never suppresses it, since the evening forecast is fresher and
 the plan targets tomorrow.
 
@@ -102,14 +103,14 @@ With **Rain skip** on, a scheduled run is skipped when the forecast probability
 meets the **Rain threshold** (a percentage the AI may tune within a safe band).
 The daily forecast is used first; if your provider publishes no probability
 there (Met.no's daily forecast, for one), the integration falls back to the
-hourly forecast and takes the maximum over the next 24 hours — the
+hourly forecast and takes the maximum over the next 24 hours; the
 `Rain probability` sensor's `source` attribute says which one was used. When no
-probability is available at all the run is **not** skipped — a missing forecast
-is never treated as dry.
+probability is available at all the run is **not** skipped, because a missing
+forecast is never treated as dry.
 
 Some providers publish no probability whatsoever (Met.no, for many locations).
 The AI still sees the forecast rain *amounts* in mm, and a run is also skipped
-when the weather entity currently reports rain — but for the probability
+when the weather entity currently reports rain. But for the probability
 threshold to do anything, pick a weather integration that provides one
 (Buienradar for the Benelux, for example).
 
@@ -155,16 +156,16 @@ except where your setup needs them.
 On the integration page, **Add zone** once per zone. The first step describes the
 zone; the second asks only for the entities its driver needs.
 
-**Common fields** — name, driver, watering order, a description (handed to the AI),
+**Common fields**: name, driver, watering order, a description (handed to the AI),
 hose length and emitter rate (used to compute litres), default/min/max duration,
 default schedule, **Seasonal** (may the AI enable/disable it), and **Adopt manual
 runs**.
 
 **Driver-specific step**
 
-- **Valve** — the valve or switch entity.
-- **Distributor** — the valve, the number of outlets, and the gap between them.
-- **Buttons** — the start button and the stop button.
+- **Valve**: the valve or switch entity.
+- **Distributor**: the valve, the number of outlets, and the gap between them.
+- **Buttons**: the start button and the stop button.
 
 **Schedule presets:** Daily · Weekdays · Weekends · Mon/Wed/Fri · Tue/Thu/Sat ·
 Mon/Thu.
@@ -217,7 +218,7 @@ Mon/Thu.
 Each zone has an **Adopt manual runs** option, **off by default**. When on,
 opening the valve from outside the integration starts a tracked run that closes
 after the zone's duration. When off, manual opens are left entirely alone. Button
-zones are never adopted — they have no readable state. If a valve seems to close
+zones are never adopted, since they have no readable state. If a valve seems to close
 itself a fixed interval after you open it by hand, this setting is the first thing
 to check.
 
@@ -226,15 +227,15 @@ to check.
 The integration surfaces problems as **repair issues** (Settings → System →
 Repairs) rather than failing silently:
 
-- **Pump reports no flow** — a zone has been open past the grace window but the
+- **Pump reports no flow**: a zone has been open past the grace window but the
   pump sensor still reads off. Also raises `binary_sensor.irrigation_no_flow`.
   The check is debounced: a pressure pump that short-cycles on a low-flow line
-  (its cut-out flow is above the zone's draw) never trips it — only a pump that
+  (its cut-out flow is above the zone's draw) never trips it; only a pump that
   is *continuously* off does. A missing or unavailable pump sensor counts as no
   signal, not as a dry pump.
-- **Zone is missing an entity** — a configured valve or button was renamed or
+- **Zone is missing an entity**: a configured valve or button was renamed or
   removed. Reconfigure the zone to point at the current entity.
-- **AI plan created an overlap** — the proposed plan would have collided on the
+- **AI plan created an overlap**: the proposed plan would have collided on the
   pump; it was rolled back to the previous plan. Please report it.
 
 ## Development
@@ -246,8 +247,8 @@ ruff check .
 scripts/develop # a throwaway HA with this component mounted
 ```
 
-The scheduling logic is pure and testable — the domain model and planner take no
-`hass` and do no I/O — and the drivers, scheduler, config flow and AI layer are
+The scheduling logic is pure and testable (the domain model and planner take no
+`hass` and do no I/O), and the drivers, scheduler, config flow and AI layer are
 the shell around it. Contributor notes live in [`CLAUDE.md`](CLAUDE.md); the AI
 contract is in [`docs/ai-contract.md`](docs/ai-contract.md).
 
