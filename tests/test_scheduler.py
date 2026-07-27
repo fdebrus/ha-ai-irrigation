@@ -340,7 +340,10 @@ async def test_no_flow_flags_a_dry_pump_past_the_grace_window(
 
     freezer.tick(timedelta(minutes=4))
     await _fire_tick(hass)
-    assert sched.no_flow
+    assert not sched.no_flow  # first off sample: could be a cycling gap
+    freezer.tick(timedelta(minutes=1))
+    await _fire_tick(hass)
+    assert sched.no_flow  # continuously off past the grace window: dry
     await sched.async_shutdown()
 
 
@@ -358,6 +361,8 @@ async def test_no_flow_clears_when_the_pump_reports_flow(
     await sched.async_start_zone("z1")
 
     freezer.tick(timedelta(minutes=4))
+    await _fire_tick(hass)
+    freezer.tick(timedelta(minutes=1))
     await _fire_tick(hass)
     assert sched.no_flow
 
@@ -379,6 +384,8 @@ async def test_no_flow_clears_when_the_zone_stops(hass: HomeAssistant, freezer) 
     await sched.async_start()
     await sched.async_start_zone("z1")
     freezer.tick(timedelta(minutes=4))
+    await _fire_tick(hass)
+    freezer.tick(timedelta(minutes=1))
     await _fire_tick(hass)
     assert sched.no_flow
 
@@ -450,9 +457,35 @@ async def test_no_flow_not_flagged_when_pump_sensor_missing_or_unavailable(
     await _fire_tick(hass)
     assert not sched.no_flow
 
-    # A real "off" past the grace window still flags.
+    # A real "off" past the grace window still flags (two consecutive checks).
     hass.states.async_set("binary_sensor.pump", "off")
     freezer.tick(timedelta(minutes=1))
     await _fire_tick(hass)
+    freezer.tick(timedelta(minutes=1))
+    await _fire_tick(hass)
     assert sched.no_flow
+    await sched.async_shutdown()
+
+
+async def test_no_flow_ignores_a_short_cycling_pump(
+    hass: HomeAssistant, freezer
+) -> None:
+    """A pressure pump cycling on/off (low-flow line) never trips the alarm."""
+    freezer.move_to("2026-07-27 06:00:00+00:00")
+    zones = {"z1": _valve_zone("z1")}
+    _wire(hass)
+    hass.states.async_set("valve.z1", "closed")
+    hass.states.async_set("binary_sensor.pump", "on")
+    sched = _make(hass, zones, pump_sensor_id="binary_sensor.pump")
+    await sched.async_start()
+    await sched.async_start_zone("z1")
+    freezer.tick(timedelta(minutes=4))
+
+    # Alternating samples: every "off" tick is followed by an "on" tick, as a
+    # short-cycling pressure switch produces. The alarm must never latch.
+    for state in ("off", "on", "off", "on", "off"):
+        hass.states.async_set("binary_sensor.pump", state)
+        freezer.tick(timedelta(minutes=1))
+        await _fire_tick(hass)
+        assert not sched.no_flow
     await sched.async_shutdown()

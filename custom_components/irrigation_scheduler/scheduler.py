@@ -33,6 +33,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     DOMAIN,
+    NO_FLOW_CONSECUTIVE_CHECKS,
     NO_FLOW_GRACE_MINUTES,
     SIGNAL_ZONE_UPDATED,
     SOURCE_ADOPTED,
@@ -107,6 +108,8 @@ class IrrigationScheduler:
         self._self_driven_timers: dict[str, TimerHandle | None] = {}
         # Set by the pump watchdog; read by the no-flow binary sensor.
         self.no_flow = False
+        # Consecutive watchdog checks that read the pump as off (debounce).
+        self._pump_off_checks = 0
         # Zone ids currently flagged with a missing-entity repair issue.
         self._missing_entities: set[str] = set()
 
@@ -254,11 +257,18 @@ class IrrigationScheduler:
         missing, unavailable or unknown is treated as NO SIGNAL, not as "off" --
         a deleted template sensor or an offline smart plug must not fake a dry
         pump.
+
+        A pressure pump SHORT-CYCLES on the low-flow porous-hose lines (the
+        RMQ's pressure switch cuts out within seconds at a few L/h), so a
+        single "off" sample means nothing: a minute tick landing in a cycling
+        gap must not alarm. A dry pump is continuously off, so the alarm only
+        latches after NO_FLOW_CONSECUTIVE_CHECKS evaluations in a row read off.
         """
         if not self._pump_sensor_id:
             return
         running = [zone for zone in self.zones.values() if zone.is_running]
         if not running:
+            self._pump_off_checks = 0
             self._set_no_flow(state=False)
             return
         pump = self.hass.states.get(self._pump_sensor_id)
@@ -267,9 +277,11 @@ class IrrigationScheduler:
                 "Pump sensor %s has no usable state; skipping the no-flow check",
                 self._pump_sensor_id,
             )
+            self._pump_off_checks = 0
             self._set_no_flow(state=False)
             return
         if pump.state == STATE_ON:
+            self._pump_off_checks = 0
             self._set_no_flow(state=False)
             return
         now = dt_util.utcnow()
@@ -278,7 +290,12 @@ class IrrigationScheduler:
             zone.last_run is not None and now - zone.last_run >= grace
             for zone in running
         )
-        self._set_no_flow(state=stalled)
+        if not stalled:
+            self._pump_off_checks = 0
+            self._set_no_flow(state=False)
+            return
+        self._pump_off_checks += 1
+        self._set_no_flow(state=self._pump_off_checks >= NO_FLOW_CONSECUTIVE_CHECKS)
 
     @callback
     def _set_no_flow(self, *, state: bool) -> None:

@@ -97,3 +97,6 @@ SOURCE_ADOPTED: Final = "adopted"
 
 # --- Watchdog --------------------------------------------------------------
 NO_FLOW_GRACE_MINUTES: Final = 3
+# A pressure pump short-cycles on low-flow porous-hose lines, so one "off"
+# sample is meaningless; only this many consecutive off checks mean dry.
+NO_FLOW_CONSECUTIVE_CHECKS: Final = 2
