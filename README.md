@@ -15,6 +15,7 @@
   <img src="https://img.shields.io/badge/quality%20scale-silver-C0C0C0.svg" alt="Quality scale: silver">
   <img src="https://img.shields.io/badge/Home%20Assistant-2025.6%2B-41BDF5.svg" alt="Home Assistant 2025.6+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
+  <a href="https://www.buymeacoffee.com/fdebrus"><img src="https://img.shields.io/badge/Support-Buy%20Me%20a%20Coffee-FFDD00?style=flat&logo=buymeacoffee" alt="Buy Me a Coffee"></a>
 </p>
 
 ---
@@ -86,8 +87,12 @@ falls back to the current value, running zones are left untouched, and if the
 proposed plan would ever overlap on the pump it is rolled back and a repair issue
 is raised. Any error at all — a malformed response, a service failure — keeps
 yesterday's plan. The reasoning is stored on `sensor.irrigation_daily_plan` under
-the `narrative` attribute. See [`docs/ai-contract.md`](docs/ai-contract.md) for the
-full contract.
+the `narrative` attribute, written in your Home Assistant language. See
+[`docs/ai-contract.md`](docs/ai-contract.md) for the full contract.
+
+The nightly run always fires at the configured plan time — a manual **Plan now**
+earlier in the day never suppresses it, since the evening forecast is fresher and
+the plan targets tomorrow.
 
 The AI layer is entirely optional: turn off **AI plan** and the schedule is yours.
 
@@ -101,6 +106,12 @@ hourly forecast and takes the maximum over the next 24 hours — the
 `Rain probability` sensor's `source` attribute says which one was used. When no
 probability is available at all the run is **not** skipped — a missing forecast
 is never treated as dry.
+
+Some providers publish no probability whatsoever (Met.no, for many locations).
+The AI still sees the forecast rain *amounts* in mm, and a run is also skipped
+when the weather entity currently reports rain — but for the probability
+threshold to do anything, pick a weather integration that provides one
+(Buienradar for the Benelux, for example).
 
 ### Restart safety
 
@@ -132,7 +143,7 @@ except where your setup needs them.
 | Field | What it's for |
 |---|---|
 | **Weather entity** | Drives the rain skip and feeds the AI forecast. Omit to disable both. |
-| **Pump running binary sensor** | Enables the no-flow watchdog. Omit and the watchdog stays inert. |
+| **Pump running binary sensor** | Enables the no-flow watchdog. Omit and the watchdog stays inert. No such sensor? A template binary sensor over your pump plug's power reading works: `{{ states('sensor.water_pump_power') \| float(0) > 20 }}`. |
 | **AI task entity** | The `ai_task` entity used for the nightly plan. Omit to run without AI. |
 | **Morning sequence start** | Base time the morning sequence is laid out from. |
 | **Evening sequence start** | Base time for the optional second runs. |
@@ -182,7 +193,7 @@ Mon/Thu.
 |---|---|
 | `switch.irrigation_master` | Master enable for the whole schedule. |
 | `switch.irrigation_rain_skip` | Enable the rain skip. |
-| `switch.irrigation_ai` | Enable the nightly AI plan. |
+| `switch.irrigation_ai_plan` | Enable the nightly AI plan. |
 | `number.irrigation_rain_threshold` | Rain probability at which runs skip. |
 | `time.irrigation_morning_base` | Morning sequence base. |
 | `time.irrigation_evening_base` | Evening sequence base. |
@@ -217,6 +228,10 @@ Repairs) rather than failing silently:
 
 - **Pump reports no flow** — a zone has been open past the grace window but the
   pump sensor still reads off. Also raises `binary_sensor.irrigation_no_flow`.
+  The check is debounced: a pressure pump that short-cycles on a low-flow line
+  (its cut-out flow is above the zone's draw) never trips it — only a pump that
+  is *continuously* off does. A missing or unavailable pump sensor counts as no
+  signal, not as a dry pump.
 - **Zone is missing an entity** — a configured valve or button was renamed or
   removed. Reconfigure the zone to point at the current entity.
 - **AI plan created an overlap** — the proposed plan would have collided on the
