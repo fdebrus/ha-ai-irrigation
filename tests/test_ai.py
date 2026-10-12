@@ -106,6 +106,7 @@ async def test_instructions_carry_current_settings_and_rules(hass: HomeAssistant
     assert f"Current rain-skip threshold: {hub.rain_threshold}%" in text
     # The regime rules that drive per-zone duration changes.
     assert "Adjust DURATIONS per zone" in text
+    assert "Sanity-check each zone's ~L/run" in text
     assert "Heat wave" in text
     assert "upper bound" in text
     assert "factor of 5" in text

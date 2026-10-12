@@ -362,6 +362,12 @@ class IrrigationAI:
                 "zone more water: raise its duration toward its upper bound "
                 "and/or enable its evening run. To give less: lower it toward "
                 "the bottom bound.",
+                "- Sanity-check each zone's ~L/run against its description "
+                "and its plants' needs. If the delivered litres are clearly "
+                "excessive or insufficient, correct that zone's duration even "
+                "when the weather alone suggests no change -- the litres "
+                "figures reflect the measured plumbing and may have been "
+                "recalibrated since the last plan.",
                 "- Heat wave (2+ consecutive days >= 28C without significant "
                 "rain): raised beds and young plantings go daily with "
                 "durations adapted to their flow, useful evening runs on; "
